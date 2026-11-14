@@ -1,2 +1,5 @@
 .venv
 .vscode
+*/NASA PDF/*
+build/*
+modules/__pycache__/*

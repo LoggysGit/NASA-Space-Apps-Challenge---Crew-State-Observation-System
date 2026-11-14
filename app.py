@@ -3,12 +3,16 @@
 import threading
 from queue import Queue
 
-from modules import lib, interface
+from modules import lib, bridge, interface
 
 def system_thread(
         sys_buffer: Queue,
-        gui_buffer: Queue):
+        gui_buffer: Queue,
+        interface: interface.Interface,
+        bridge: bridge.BridgeWin):
     """ System thread """
+
+    bridge.start()
 
     while True:
         item = sys_buffer.get()
@@ -52,5 +56,4 @@ if __name__ == "__main__":
         sys_command_buffer.put(("CLOSE", None))
         app.destroy()
 
-    app.protocol("WM_DELETE_WINDOW", on_closing)
     app.mainloop()
