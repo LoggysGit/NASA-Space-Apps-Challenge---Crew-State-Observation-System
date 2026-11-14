@@ -2,12 +2,21 @@
 
 import binascii
 import math
-import random
-import struct
+from pathlib import Path
 import tkinter as tk
+from tkinter import messagebox
 from collections import deque
 from datetime import datetime, timedelta, timezone
+import json, os, glob, time, re
+from io import BytesIO
 from typing import Callable
+
+try:
+    import cairosvg
+    from PIL import Image
+except ImportError:
+    cairosvg = None
+    Image = None
 
 import customtkinter as ctk
 
@@ -18,15 +27,20 @@ SYSTEM_NAME = "cSOS (Crew State Observation System)"
 APP_TITLE = SYSTEM_NAME
 WINDOW_SIZE = "1360x860"
 
-CARD_BG = "#2b2b2b"
-PLOT_BG = "#1a1a1a"
-MUTED = "gray60"
-GREEN = "#1DB954"
-RED = "#e5534b"
-BAND_COLOR = "#4fc3f7"
-ACCENT = "#1f6aa5"
-INACTIVE = "#3a3a3a"
-MONO = "Courier New"
+CARD_BG = "#171f2b"
+PLOT_BG = "#0d1420"
+MUTED = "#91a0b5"
+GREEN = "#39d98a"
+RED = "#ff647c"
+BAND_COLOR = "#58c7fa"
+ACCENT = "#3978f6"
+INACTIVE = "#344154"
+MONO = "Cascadia Mono"
+APP_BG = "#0b1220"
+PANEL_BG = "#121c2b"
+PANEL_BORDER = "#26364b"
+FIELD_BG = "#0d1726"
+
 
 # Protocol archive palette
 DOC_CARD = "#1c2128"
@@ -38,14 +52,13 @@ DOC_STAR_EMPTY = "#3a3f47"
 DOC_PANEL = "#161b22"
 DOC_MODAL_BG = "#0d1117"
 
-# Simulation / buffers
+# Runtime buffers
 SIM_MS = 500
 HIST_LEN = 120
 LOG_MAX = 300
 LOG_VISIBLE = 80
 HISTORY_KEYS = ("temp", "pulse", "spo2")
 LINK_LOST_MESSAGE = "-- LINK LOST: no packets received --"
-PPG_CHANNELS = ((84000, 1.0), (121000, 1.3), (81000, 0.9), (118000, 1.2))
 
 # Heatmap geometry (cells of 11 px -> 330 x 176 canvas)
 HEAT_COLS = 30
@@ -73,17 +86,70 @@ SPECTRUM_STOPS = [
 PALETTE_SIZE = 64
 
 # Ground link state (replace with a real link monitor later)
-EARTH_LINK_ON = False
+EARTH_LINK_ON = None
 
 PAGE_TELEMETRY = 1
 
 # Sidebar items: (button label, page title)
 NAV_ITEMS = [
-    ("▦  Overview", "Crew Overview"),
-    ("∿  Telemetry", "Detailed Telemetry"),
-    ("☰  Logs / Docs", "Logs & Docs"),
-    ("⚙  Settings", "Settings"),
+    ("Overview", "Crew Overview", "grid"),
+    ("Telemetry", "Detailed Telemetry", "activity"),
+    ("Logs / Docs", "Logs & Docs", "file"),
+    ("Settings", "Settings", "settings"),
 ]
+
+SVG_ICONS = {
+    "grid": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+    "activity": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>',
+    "file": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8"/></svg>',
+    "settings": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.7 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.7-1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.7-1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.7 1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 2z" transform="translate(-1 -1) scale(1.08)"/></svg>',
+    "user-plus": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></svg>',
+    "trash": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6m4 4v6m6-6v6"/></svg>',
+    "check": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>',
+}
+
+def svg_icon(name: str, size: int = 20):
+    """Rasterize a small inline SVG for CustomTkinter buttons and labels."""
+    if cairosvg is None or Image is None or name not in SVG_ICONS:
+        return None
+    try:
+        png = cairosvg.svg2png(bytestring=SVG_ICONS[name].encode("utf-8"), output_width=size, output_height=size)
+        image = Image.open(BytesIO(png)).convert("RGBA")
+        return ctk.CTkImage(light_image=image, dark_image=image, size=(size, size))
+    except Exception:
+        return None
+
+
+_GENDER_IMAGES = {}
+
+def gender_image(gender: str, size: tuple[int, int] = (132, 198)):
+    """Load the project's supplied PNG portrait for the selected gender."""
+    key = str(gender or "").strip().upper()
+    filename = "f_icon.png" if key in {"F", "FEMALE", "WOMAN", "Ж"} else "m_icon.png" if key in {"M", "MALE", "MAN", "М"} else None
+    if filename is None or Image is None:
+        return None
+    cache_key = (filename, size)
+    if cache_key in _GENDER_IMAGES:
+        return _GENDER_IMAGES[cache_key]
+
+    module_dir = Path(__file__).resolve().parent
+    asset_dirs = (module_dir / "assets", module_dir.parent / "assets", Path.cwd() / "assets")
+    for asset_dir in asset_dirs:
+        asset_path = asset_dir / filename
+        if asset_path.is_file():
+            try:
+                with Image.open(asset_path) as source:
+                    portrait = source.convert("RGBA")
+                    portrait.thumbnail(size, getattr(Image, "Resampling", Image).LANCZOS)
+                    canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+                    canvas.alpha_composite(portrait, ((size[0] - portrait.width) // 2, (size[1] - portrait.height) // 2))
+                result = ctk.CTkImage(light_image=canvas, dark_image=canvas, size=size)
+                _GENDER_IMAGES[cache_key] = result
+                return result
+            except (OSError, ValueError):
+                return None
+    return None
+
 
 
 class LayerSpec:
@@ -112,8 +178,6 @@ NODE_POS = {
     "P": ((0.35, 0.50), (0.50, 0.28), (0.50, 0.72), (0.65, 0.50)),
     "E": ((0.10, 0.50), (0.30, 0.25), (0.30, 0.75), (0.70, 0.25), (0.70, 0.75), (0.90, 0.50)),
 }
-T_OFFSETS = (-0.6, 0.2, 0.5, -0.2)
-P_OFFSETS = (-0.3, 0.2, 0.4, -0.1)
 
 
 class ChartSpec:
@@ -171,7 +235,7 @@ RAW_SENSORS = (
     RawSensor("e1-e6", "TI ADS1298", ("e1", "e2", "e3", "e4", "e5", "e6"), "muV", 0, 1),
     RawSensor("r1, ir1 + r2, ir2", "ADI MAX86141", ("r1", "ir1", "r2", "ir2"), "counts", 0, 1),
     RawSensor("h1", "SHT45", ("h1",), "%", 1, 6),
-    RawSensor("+vBat", "BQ27441-G1", ("+vBat",), "V", 3, 10),
+    RawSensor("vbat", "BQ27441-G1", ("vbat",), "V", 3, 10),
 )
 
 
@@ -211,145 +275,21 @@ SPECTRUM_PALETTE = [
 # Data model
 # ---------------------------------------------------------------------------
 class CrewMember:
-    """Static crew data plus the live state updated by the simulation."""
-
-    def __init__(self, crew_id: str, name: str, gender: str, age: int, role: str,
-                 overall_health: int, stress: int, temp: float, press: float,
-                 pulse: float, spo2: float, connected: bool, battery: int,
-                 rssi: int, loss: float, uptime: float, fw: str) -> None:
-        self.crew_id = crew_id
-        self.name = name
-        self.gender = gender
-        self.age = age
-        self.role = role
-        self.overall_health = overall_health
-        self.stress = stress
-        self.temp = temp
-        self.press = press
-        self.pulse = pulse
-        self.spo2 = spo2
-        self.connected = connected
-        self.battery = battery
-        self.rssi = rssi
-        self.loss = loss
-        self.uptime = uptime
-        self.fw = fw
-
-        # Resting values the simulation oscillates around
-        self.base_temp = temp
-        self.base_press = press
-        self.base_pulse = pulse
-        self.base_spo2 = spo2
-
-        # Live state
-        self.apid = int(crew_id.split("APID-")[1])
-        self.seq = 0
-        self.last_packet = datetime.now(timezone.utc)
-        self.humidity = 45.0
-        self.vel = 0.0
-        self.ppg = [0, 0, 0, 0]
+    """Crew identity and live telemetry reconstructed from Core JSONL files."""
+    def __init__(self, crew_id, name="Unknown crew member", gender="—", age=None, role="—",
+                 overall_health=None, stress=None, temp=None, press=None, pulse=None, spo2=None,
+                 connected=False, battery=0, rssi=None, loss=None, uptime=None, fw=None):
+        self.crew_id, self.name, self.gender, self.age, self.role = crew_id, name, gender, age, role
+        self.overall_health, self.stress = overall_health, stress
+        self.temp, self.press, self.pulse, self.spo2 = temp, press, pulse, spo2
+        self.connected, self.battery = connected, battery
+        self.rssi, self.loss, self.uptime, self.fw = rssi, loss, uptime, fw
+        match = re.search(r'(\d+)$', str(crew_id)); self.apid = int(match.group(1)) if match else 0
+        self.seq, self.last_packet, self.last_seen = 0, None, 0.0
+        self.humidity = self.vel = None; self.ppg = [None] * 4
         self.nodes = {"t": [], "p": [], "e": []}
         self.hist = {key: deque(maxlen=HIST_LEN) for key in HISTORY_KEYS}
-        self.log = deque(maxlen=LOG_MAX)
-        self.raw = {}  # parameter name -> (value, timestamp)
-
-
-def sample_crew() -> list[CrewMember]:
-    """Return the demo crew; replace with real data later."""
-    return [
-        CrewMember("0x01 / APID-016", "Elena Voronova", "F", 34, "Mission Specialist",
-                   99, 12, 36.6, 101.4, 68, 98, True, 100, -48, 0.1, 9240, "1.4.2"),
-        CrewMember("0x02 / APID-017", "James Carter", "M", 41, "Commander",
-                   65, 41, 37.4, 102.6, 88, 95, True, 72, -57, 0.4, 18130, "1.4.2"),
-        CrewMember("0x03 / APID-018", "Mark Ivanov", "M", 38, "Flight Engineer",
-                   7, 93, 39.1, 105.2, 134, 84, True, 18, -71, 2.7, 4410, "1.4.1"),
-        CrewMember("0x04 / APID-019", "Aiko Tanaka", "F", 36, "Medical Officer",
-                   82, 25, 36.9, 101.8, 74, 97, False, 54, -90, 100.0, 0, "1.4.2"),
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Simulation (swap these for the real telemetry pipeline)
-# ---------------------------------------------------------------------------
-def jitter_crew(crew: CrewMember, tick: int) -> None:
-    """Advance one simulated sample for a crew member."""
-    crew.temp = round(crew.base_temp + 0.12 * math.sin(tick / 12) + random.uniform(-0.04, 0.04), 2)
-    crew.pulse = round(crew.base_pulse + 3 * math.sin(tick / 7) + random.uniform(-1.5, 1.5))
-    crew.spo2 = round(
-        min(100.0, crew.base_spo2 + 0.6 * math.sin(tick / 9) + random.uniform(-0.3, 0.3)), 1
-    )
-    crew.press = round(crew.base_press + 0.4 * math.sin(tick / 10) + random.uniform(-0.08, 0.08), 2)
-
-    crew.nodes["t"] = [crew.temp + o + random.uniform(-0.03, 0.03) for o in T_OFFSETS]
-    crew.nodes["p"] = [crew.press + o + random.uniform(-0.05, 0.05) for o in P_OFFSETS]
-    e_base = 60 + crew.stress * 3.5
-    crew.nodes["e"] = [
-        max(0.0, e_base * (1 + 0.5 * math.sin(tick / 5 + i)) + random.uniform(-10, 10))
-        for i in range(LAYERS["E"].count)
-    ]
-
-    # Placeholder blood velocity (cm/s) and PPG counts (r1, ir1, r2, ir2)
-    crew.vel = round(0.30 * crew.pulse + 1.5 * math.sin(tick / 6) + random.uniform(-0.4, 0.4), 1)
-    ppg_wave = 2500 * math.sin(tick / 3)
-    crew.ppg = [
-        round(counts + gain * ppg_wave + random.uniform(-400, 400)) for counts, gain in PPG_CHANNELS
-    ]
-    crew.humidity = round(40 + crew.stress * 0.2 + 3 * math.sin(tick / 20), 1)
-
-    t_nodes = crew.nodes["t"]
-    crew.hist["temp"].append(sum(t_nodes) / len(t_nodes))
-    crew.hist["pulse"].append(crew.pulse)
-    crew.hist["spo2"].append(crew.spo2)
-
-
-def raw_values(crew: CrewMember) -> dict:
-    """Return the current value of every raw parameter, keyed by parameter name."""
-    values = {}
-    for prefix in ("t", "p", "e"):
-        for i, value in enumerate(crew.nodes[prefix], start=1):
-            values[f"{prefix}{i}"] = value
-    values.update(zip(("r1", "ir1", "r2", "ir2"), crew.ppg))
-    values["h1"] = crew.humidity
-    values["+vBat"] = 3.30 + 0.90 * crew.battery / 100
-    return values
-
-
-def update_raw(crew: CrewMember, tick: int, ts: datetime) -> None:
-    """Latch a sensor's parameters and timestamp when its update period elapses."""
-    current = raw_values(crew)
-    for sensor in RAW_SENSORS:
-        if tick % sensor.period == 0 or sensor.params[0] not in crew.raw:
-            for param in sensor.params:
-                crew.raw[param] = (current[param], ts)
-
-
-def format_packet(crew: CrewMember, ts: datetime) -> str:
-    """Build a CCSDS-style packet and render it as a hex log line."""
-    payload = struct.pack(
-        ">HHHH", int(crew.temp * 100), int(crew.press * 100), int(crew.pulse), int(crew.spo2 * 10)
-    )
-    header = struct.pack(">HHH", 0x0800 | crew.apid, 0xC000 | (crew.seq & 0x3FFF), len(payload) - 1)
-    data = header + payload
-    data += struct.pack(">H", binascii.crc_hqx(data, 0xFFFF))
-    words = " ".join(data[i:i + 2].hex().upper() for i in range(0, len(data), 2))
-    return f"{ts:%H:%M:%S} {words}"
-
-
-def init_runtime(members: list[CrewMember]) -> None:
-    """Fill histories, raw tables and packet logs with HIST_LEN simulated samples."""
-    now = datetime.now(timezone.utc)
-    for i, member in enumerate(members):
-        member.seq = 4100 + 37 * i
-        end = now - timedelta(seconds=0 if member.connected else 300)
-        for tick in range(HIST_LEN):
-            jitter_crew(member, tick)
-            ts = end - timedelta(seconds=(HIST_LEN - 1 - tick) * SIM_MS / 1000)
-            update_raw(member, tick, ts)
-            member.seq += 1
-            member.last_packet = ts
-            member.log.append(format_packet(member, ts))
-        if not member.connected:
-            member.log.append(LINK_LOST_MESSAGE)
+        self.log = deque(maxlen=LOG_MAX); self.raw = {}; self.source_file = ""
 
 
 def value_range(values: list[float], decimals: int) -> str:
@@ -358,25 +298,19 @@ def value_range(values: list[float], decimals: int) -> str:
 
 
 def telemetry_values(crew: CrewMember) -> dict:
-    """Return (text, colour or None) for each row of TELEMETRY_ROWS."""
-    t_nodes = crew.nodes["t"]
-    p_nodes = crew.nodes["p"]
-    e_nodes = crew.nodes["e"]
-    e_rms = math.sqrt(sum(v * v for v in e_nodes) / len(e_nodes))
-
-    return {
-        "Avg. t": (f"{sum(t_nodes) / len(t_nodes):.1f}", None),
-        "Avg. p": (f"{sum(p_nodes) / len(p_nodes):.2f}", None),
-        "emRMS (Avg. e)": (f"{e_rms:.0f}", None),
-        "t Map": (value_range(t_nodes, 1), None),
-        "p Map": (value_range(p_nodes, 2), None),
-        "em Map": (value_range(e_nodes, 0), None),
-        "pulse": (f"{crew.pulse:.0f}", None),
-        "spo2": (f"{crew.spo2:.1f}", None),
-        "blood vel": (f"{crew.vel:.1f}", None),
-        "humidity": (f"{crew.humidity:.1f}", None),
-        "+charge": (f"{crew.battery}", RED if crew.battery < 20 else None),
-    }
+    """Format only values received from Core; absent data stays unavailable."""
+    def avg(v, d=1): return (f"{sum(v)/len(v):.{d}f}", None) if v and all(x is not None for x in v) else ("—", None)
+    def span(v, d): return (value_range(v, d), None) if v and all(x is not None for x in v) else ("—", None)
+    e = crew.nodes["e"]
+    rms = math.sqrt(sum(x*x for x in e)/len(e)) if e and all(x is not None for x in e) else None
+    return {"Avg. t":avg(crew.nodes['t']), "Avg. p":avg(crew.nodes['p'],2),
+      "emRMS (Avg. e)":(f"{rms:.0f}" if rms is not None else "—",None),
+      "t Map":span(crew.nodes['t'],1), "p Map":span(crew.nodes['p'],2), "em Map":span(e,0),
+      "pulse":(f"{crew.pulse:.0f}" if crew.pulse is not None else "—",None),
+      "spo2":(f"{crew.spo2:.1f}" if crew.spo2 is not None else "—",None),
+      "blood vel":(f"{crew.vel:.1f}" if crew.vel is not None else "—",None),
+      "humidity":(f"{crew.humidity:.1f}" if crew.humidity is not None else "—",None),
+      "+charge":(f"{crew.battery}" if 'vbat' in crew.raw else "—",None)}
 
 
 # ---------------------------------------------------------------------------
@@ -472,31 +406,49 @@ def clip_polygon_x(points: list, x_max: float) -> list:
 # Shared widgets
 # ---------------------------------------------------------------------------
 class Sidebar(ctk.CTkFrame):
-    """Left navigation column."""
+    """Compact navigation rail with SVG iconography."""
 
     def __init__(self, master: tk.Misc, on_select: Callable[[int], None]) -> None:
-        super().__init__(master, width=200, corner_radius=0)
+        super().__init__(master, width=228, corner_radius=0, fg_color="#101a29")
         self.pack_propagate(False)
         self.grid_propagate(False)
+        self._icons = {}
 
-        ctk.CTkLabel(
-            self, text=SYSTEM_NAME, text_color=MUTED, wraplength=168, justify="left"
-        ).pack(padx=16, pady=(54, 24), anchor="w")
+        brand = ctk.CTkFrame(self, fg_color="transparent")
+        brand.pack(fill="x", padx=18, pady=(30, 32))
+        mark = ctk.CTkFrame(brand, width=42, height=42, corner_radius=13, fg_color=ACCENT)
+        mark.pack(side="left")
+        mark.pack_propagate(False)
+        ctk.CTkLabel(mark, text="cS", text_color="white", font=ctk.CTkFont(size=17, weight="bold")).place(relx=.5, rely=.5, anchor="center")
+        brand_text = ctk.CTkFrame(brand, fg_color="transparent")
+        brand_text.pack(side="left", padx=11)
+        ctk.CTkLabel(brand_text, text="cSOS", font=ctk.CTkFont(size=19, weight="bold"), anchor="w").pack(anchor="w")
+        ctk.CTkLabel(brand_text, text="CREW MONITOR", text_color=MUTED, font=ctk.CTkFont(size=9, weight="bold"), anchor="w").pack(anchor="w", pady=(1, 0))
 
+        ctk.CTkLabel(self, text="WORKSPACE", text_color="#65758c", font=ctk.CTkFont(size=10, weight="bold")).pack(anchor="w", padx=22, pady=(0, 10))
         self._buttons = []
-        for index, (label, _title) in enumerate(NAV_ITEMS):
+        for index, (label, _title, icon_name) in enumerate(NAV_ITEMS):
+            icon = svg_icon(icon_name, 19)
+            if icon:
+                self._icons[icon_name] = icon
             button = ctk.CTkButton(
-                self, text=label, anchor="w", height=40, fg_color="transparent",
-                hover_color=("gray70", "gray25"),
+                self, text=label, image=icon, compound="left", anchor="w", height=46,
+                corner_radius=11, border_spacing=13, font=ctk.CTkFont(size=13, weight="bold"),
+                fg_color="transparent", hover_color="#1b2b40", text_color="#b9c8da",
                 command=lambda i=index: on_select(i),
             )
-            button.pack(fill="x", padx=12, pady=3)
+            button.pack(fill="x", padx=12, pady=4)
             self._buttons.append(button)
+        ctk.CTkLabel(self, text="CORE DATA  ·  .DAT", text_color="#65758c", font=ctk.CTkFont(size=9, weight="bold")).pack(side="bottom", anchor="w", padx=22, pady=22)
 
     def set_active(self, index: int) -> None:
-        """Highlight the button of the active page."""
         for i, button in enumerate(self._buttons):
-            button.configure(fg_color=("gray75", "gray30") if i == index else "transparent")
+            active = i == index
+            button.configure(
+                fg_color="#203858" if active else "transparent",
+                text_color="#ffffff" if active else "#b9c8da",
+                hover_color="#29466d" if active else "#1b2b40",
+            )
 
 
 class StarRating(tk.Canvas):
@@ -542,10 +494,11 @@ class StarRating(tk.Canvas):
 class CrewCard(ctk.CTkFrame):
     """Summary card of a single crew member."""
 
-    def __init__(self, master: tk.Misc, member: CrewMember) -> None:
+    def __init__(self, master: tk.Misc, member: CrewMember, on_details: Callable[[CrewMember], None] | None = None) -> None:
+        self._on_details = on_details
         super().__init__(
             master, width=300, height=540, corner_radius=18, fg_color=CARD_BG,
-            border_width=3, border_color=health_color(member.overall_health),
+            border_width=3, border_color=health_color(member.overall_health) if member.overall_health is not None else INACTIVE,
         )
         self.pack_propagate(False)
         self.grid_propagate(False)
@@ -567,30 +520,35 @@ class CrewCard(ctk.CTkFrame):
         ctk.CTkButton(
             top, text="i", width=26, height=26, corner_radius=13,
             font=ctk.CTkFont(size=13, weight="bold"),
-            command=lambda: print(f"Info clicked for {member.crew_id}"),
+            command=lambda: self._on_details(member) if self._on_details else None,
         ).grid(row=0, column=1, sticky="e")
         ctk.CTkLabel(
             self, text=f"ID: {member.crew_id}", text_color=MUTED,
             font=ctk.CTkFont(size=11), anchor="w",
         ).grid(row=1, column=0, sticky="w", padx=16)
         ctk.CTkLabel(
-            self, text=f"Overall health: {member.overall_health}%",
+            self, text=f"Overall health: {member.overall_health if member.overall_health is not None else '—'}%",
             font=ctk.CTkFont(size=14, weight="bold"), anchor="w",
         ).grid(row=2, column=0, sticky="w", padx=16, pady=(10, 0))
         ctk.CTkLabel(
-            self, text=f"Stress level: {member.stress}%", font=ctk.CTkFont(size=14), anchor="w"
+            self, text=f"Stress level: {member.stress if member.stress is not None else '—'}%", font=ctk.CTkFont(size=14), anchor="w"
         ).grid(row=3, column=0, sticky="w", padx=16)
 
     def _build_figure(self, member: CrewMember) -> None:
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 0))
         row.grid_columnconfigure(0, weight=1)
-        canvas = ctk.CTkCanvas(row, width=140, height=210, bg=CARD_BG, highlightthickness=0)
-        canvas.grid(row=0, column=0, sticky="w")
-        draw_silhouette(canvas, member.gender)
+        portrait = gender_image(member.gender)
+        if portrait is not None:
+            portrait_label = ctk.CTkLabel(row, text="", image=portrait, width=140, height=210)
+            portrait_label.grid(row=0, column=0, sticky="w")
+        else:
+            canvas = ctk.CTkCanvas(row, width=140, height=210, bg=CARD_BG, highlightthickness=0)
+            canvas.grid(row=0, column=0, sticky="w")
+            draw_silhouette(canvas, member.gender)
         ctk.CTkButton(
             row, text="More...", width=84,
-            command=lambda: print(f"More clicked for {member.crew_id}"),
+            command=lambda: self._on_details(member) if self._on_details else None,
         ).grid(row=0, column=1, sticky="e", padx=(8, 0))
 
     def _build_vitals(self, member: CrewMember) -> None:
@@ -598,8 +556,10 @@ class CrewCard(ctk.CTkFrame):
         vitals.grid(row=5, column=0, sticky="ew", padx=16, pady=(10, 0))
         vitals.grid_columnconfigure((0, 1), weight=1, uniform="vitals")
         cells = (
-            f"Temp: {member.base_temp:.1f}°C", f"Press: {member.base_press:.1f} kPa",
-            f"Pulse: {member.base_pulse:.0f}", f"SpO2: {member.base_spo2:g}%",
+            f"Temp: {member.temp:.1f}°C" if member.temp is not None else "Temp: —",
+            f"Press: {member.press:.2f} kPa" if member.press is not None else "Press: —",
+            f"Pulse: {member.pulse:.0f}" if member.pulse is not None else "Pulse: —",
+            f"SpO2: {member.spo2:g}%" if member.spo2 is not None else "SpO2: —",
         )
         for i, text in enumerate(cells):
             ctk.CTkLabel(vitals, text=text, anchor="w", font=ctk.CTkFont(size=13)).grid(
@@ -611,10 +571,10 @@ class CrewCard(ctk.CTkFrame):
         footer.grid(row=6, column=0, sticky="sew", padx=16, pady=(10, 14))
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            footer, text="● Connected" if member.connected else "● Offline",
+            footer, text="● Receiving" if member.connected else "● No recent data",
             text_color=GREEN if member.connected else RED, font=ctk.CTkFont(size=12),
         ).grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(footer, text=f"{member.battery}%", font=ctk.CTkFont(size=12)).grid(
+        ctk.CTkLabel(footer, text=f"{member.battery}%" if "vbat" in member.raw else "Battery —", font=ctk.CTkFont(size=12)).grid(
             row=0, column=1, sticky="e"
         )
 
@@ -622,7 +582,7 @@ class CrewCard(ctk.CTkFrame):
 class OverviewPage(ctk.CTkFrame):
     """Header with link status and a horizontal strip of crew cards."""
 
-    def __init__(self, master: tk.Misc, crew: list[CrewMember]) -> None:
+    def __init__(self, master: tk.Misc, crew: list[CrewMember], on_details=None) -> None:
         super().__init__(master, fg_color="transparent")
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -636,15 +596,17 @@ class OverviewPage(ctk.CTkFrame):
             header, text=f"Connected: {peers} peers", font=ctk.CTkFont(size=16, weight="bold")
         ).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(
-            header, text=f"Earth: {'ON' if EARTH_LINK_ON else 'OFF'}",
+            header, text="Ground link: not reported by Core",
             font=ctk.CTkFont(size=14, weight="bold"), text_color="white",
-            fg_color=GREEN if EARTH_LINK_ON else RED, corner_radius=12, padx=14, pady=3,
+            fg_color=INACTIVE, corner_radius=12, padx=14, pady=3,
         ).grid(row=0, column=1, sticky="e")
 
         strip = ctk.CTkScrollableFrame(self, orientation="horizontal", fg_color="transparent")
         strip.grid(row=1, column=0, sticky="nsew", padx=10, pady=(4, 14))
+        if not crew:
+            ctk.CTkLabel(strip, text="No .dat telemetry files found. Waiting for Core...", text_color=MUTED).pack(padx=24, pady=30)
         for member in crew:
-            CrewCard(strip, member).pack(side="left", padx=8, pady=4, anchor="n")
+            CrewCard(strip, member, on_details).pack(side="left", padx=8, pady=4, anchor="n")
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +646,7 @@ class CrewHeader(ctk.CTkFrame):
         )
         self._name_label.configure(text=crew.name)
         self._subinfo_label.configure(
-            text=f"Sex: {crew.gender}  ·  Age: {crew.age}  ·  Role: {crew.role}"
+            text=f"Gender: {crew.gender}  ·  Age: {crew.age if crew.age is not None else '—'}  ·  Role: {crew.role}"
         )
 
 
@@ -755,15 +717,20 @@ class RawDataPanel(ctk.CTkFrame):
     def show(self, crew: CrewMember) -> None:
         """Refresh the table and the packet header for `crew`."""
         self._crew = crew
-        self._packet_label.configure(
-            text=f"Last Packet: {crew.last_packet:%Y-%m-%d %H:%M:%S} UTC | Seq: #{crew.seq}"
-        )
+        packet_time = (crew.last_packet.strftime("%Y-%m-%d %H:%M:%S UTC")
+                       if isinstance(crew.last_packet, datetime) else "—")
+        sequence = crew.seq if crew.seq is not None else "—"
+        self._packet_label.configure(text=f"Last Packet: {packet_time} | Seq: #{sequence}")
         for sensor in RAW_SENSORS:
             for param in sensor.params:
-                value, ts = crew.raw[param]
                 value_label, stamp_label = self._cells[param]
-                value_label.configure(text=f"{value:.{sensor.decimals}f} {sensor.unit}")
-                stamp_label.configure(text=f"{ts:%H:%M:%S}")
+                item = crew.raw.get(param)
+                if item is None:
+                    value_label.configure(text="—"); stamp_label.configure(text="—")
+                else:
+                    value, ts = item
+                    value_label.configure(text=f"{value:.{sensor.decimals}f} {sensor.unit}")
+                    stamp_label.configure(text=f"{ts:%H:%M:%S}")
 
     def reload_log(self, crew: CrewMember) -> None:
         """Replace the packet feed with the latest log lines of `crew`."""
@@ -789,7 +756,6 @@ class RawDataPanel(ctk.CTkFrame):
     def toggle_pause(self) -> None:
         """Pause or resume the packet feed."""
         self.paused = not self.paused
-        print(f"Raw feed: {'paused' if self.paused else 'resumed'}")
         if not self.paused and self._crew is not None:
             self.reload_log(self._crew)
 
@@ -868,7 +834,6 @@ class SensorMapPanel(ctk.CTkFrame):
     # --- layer selection ----------------------------------------------------
     def select_layer(self, key: str) -> None:
         """Switch to layer `key` and redraw."""
-        print(f"Sensor layer selected: [ {key} ]")
         self._layer = key
         self._apply_layer()
         self._draw_nodes()
@@ -917,6 +882,10 @@ class SensorMapPanel(ctk.CTkFrame):
             return
         spec = LAYERS[self._layer]
         values = self._crew.nodes[spec.prefix]
+        if len(values) != spec.count or any(v is None for v in values):
+            for item in self._cells: self._heat_canvas.itemconfigure(item, fill=PLOT_BG)
+            self._cell_colors = [PLOT_BG] * len(self._cells)
+            return
         for idx, weights in enumerate(self._cell_weights(self._layer)):
             value = sum(w * v for w, v in zip(weights, values))
             level = min(max((value - spec.vmin) / (spec.vmax - spec.vmin), 0.0), 1.0)
@@ -957,7 +926,9 @@ class SensorMapPanel(ctk.CTkFrame):
         if i is None or self._crew is None:
             return
         spec = LAYERS[self._layer]
-        value = self._crew.nodes[spec.prefix][i]
+        values = self._crew.nodes[spec.prefix]
+        if i >= len(values) or values[i] is None: return
+        value = values[i]
         nx, ny = NODE_POS[self._layer][i]
         x = nx * HEAT_W
         y = ny * HEAT_H
@@ -979,7 +950,7 @@ class SensorMapPanel(ctk.CTkFrame):
         i = self._nearest_node(event.x, event.y)
         if i is not None and self._crew is not None:
             prefix = LAYERS[self._layer].prefix
-            print(f"Sensor node clicked: {prefix}{i + 1} ({self._crew.crew_id})")
+            self._heat_canvas.event_generate("<Motion>", x=int(NODE_POS[self._layer][i][0]*HEAT_W), y=int(NODE_POS[self._layer][i][1]*HEAT_H))
 
 
 class TelemetryListPanel(ctk.CTkFrame):
@@ -1076,6 +1047,10 @@ class TelemetryPage(ctk.CTkFrame):
         self._index = 0
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
+        if not crew:
+            ctk.CTkLabel(self, text="No crew telemetry files found.\nWaiting for Core data in the configured .dat directory.",
+                         text_color=MUTED, justify="center").grid(row=0, column=0, columnspan=3, padx=30, pady=60)
+            return
 
         # Carousel pagination dots (top centre)
         dots_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -1132,21 +1107,20 @@ class TelemetryPage(ctk.CTkFrame):
 
     def select_crew(self, index: int) -> None:
         """Show the crew member at `index` (wraps around)."""
+        if not self._crew: return
         self._index = index % len(self._crew)
-        print(f"Carousel: crew {self.current.crew_id} (index {self._index})")
         self.show_crew()
 
     def prev_crew(self) -> None:
-        print("Carousel: '<' clicked")
         self.select_crew(self._index - 1)
 
     def next_crew(self) -> None:
-        print("Carousel: '>' clicked")
         self.select_crew(self._index + 1)
 
     def show_crew(self) -> None:
         """Reload every widget for the selected crew member."""
         crew = self.current
+        if crew is None: return
         self._raw_panel.reload_log(crew)
         self._sensor_map.set_crew(crew)
         self.refresh()
@@ -1154,6 +1128,7 @@ class TelemetryPage(ctk.CTkFrame):
     def refresh(self) -> None:
         """Update all widgets with the latest simulated values."""
         crew = self.current
+        if crew is None: return
         for i, dot in enumerate(self._dots):
             dot.configure(
                 text="●" if i == self._index else "○",
@@ -1167,12 +1142,12 @@ class TelemetryPage(ctk.CTkFrame):
 
     def on_packet(self, member: CrewMember, line: str) -> None:
         """Feed a new packet line if `member` is the one on screen."""
-        if member is self.current:
+        if member is self.current and self.current is not None:
             self._raw_panel.feed(line)
 
 
 # ---------------------------------------------------------------------------
-# Page 3: first aid & protocol archive (mock data)
+# Page 3: protocol archive (filesystem-backed)
 # ---------------------------------------------------------------------------
 class Document:
     """Metadata of a PDF protocol located in fadocs/."""
@@ -1189,127 +1164,22 @@ class Document:
         self.points = points
 
 
-MOCK_DOCUMENTS = [
-    Document(
-        "HYPOXIA_EMERGENCY_PROTOCOL.pdf", "Hypoxia Emergency Protocol", 5.0,
-        ("hypoxia", "spo2", "oxygen", "critical", "nasa-std-3001"), "4.2 MB", 12,
-        "PLACEHOLDER SUMMARY\n\n"
-        "Covers recognition and response to hypoxia in a crewmember exposed to a degraded "
-        "habitable atmosphere. Describes early indicators (reduced SpO2, elevated heart rate, "
-        "impaired judgement), immediate oxygen restoration, and criteria for escalating to "
-        "medical support.",
-        (
-            "Verify SpO2 < 88% on two consecutive readings",
-            "Administer 100% O2 and restore a habitable atmosphere",
-            "Keep the crewmember at rest and monitor continuously",
-            "Log event time and readings for the medical record",
-        ),
-    ),
-    Document(
-        "ACUTE_CARDIAC_ARRHYTHMIA_RESPONSE.pdf", "Acute Cardiac Arrhythmia Response", 4.8,
-        ("cardiac", "arrhythmia", "heart-rate", "critical", "ppg"), "3.1 MB", 9,
-        "PLACEHOLDER SUMMARY\n\n"
-        "Outlines the response to irregular or sustained abnormal heart rhythm detected by "
-        "wearable telemetry, including confirmation of the reading, crew positioning, and "
-        "notification of the flight surgeon.",
-        (
-            "Confirm the reading with a second sensor channel",
-            "Stop activity and position the crewmember safely",
-            "Notify the flight surgeon with recent HR trend data",
-            "Prepare emergency equipment per the cardiac checklist",
-        ),
-    ),
-    Document(
-        "DECOMPRESSION_SICKNESS_SOP.pdf", "Decompression Sickness SOP", 4.5,
-        ("dcs", "barotrauma", "pressure", "eva", "nasa-std-3001"), "6.8 MB", 18,
-        "PLACEHOLDER SUMMARY\n\n"
-        "Standard operating procedure for suspected decompression sickness after pressure "
-        "changes or EVA prebreathe deviations. Covers symptom screening, oxygen therapy, and "
-        "recompression decision points.",
-        (
-            "Screen for joint pain, rash, numbness, or fatigue",
-            "Begin 100% oxygen breathing immediately",
-            "Record the pressure profile preceding symptom onset",
-            "Follow the recompression decision tree with ground support",
-        ),
-    ),
-    Document(
-        "THERMAL_BURN_TRIAGE.pdf", "Thermal Burn Triage", 3.5,
-        ("burn", "thermal", "triage", "skin", "temperature"), "2.4 MB", 7,
-        "PLACEHOLDER SUMMARY\n\n"
-        "Describes assessment and first response to thermal burns in a closed habitat, "
-        "including burn depth estimation, cooling, dressing, and infection prevention.",
-        (
-            "Remove the heat source and cool the area per protocol",
-            "Estimate burn depth and affected surface area",
-            "Apply a sterile dressing and avoid popping blisters",
-            "Monitor skin temperature trend on the wearable",
-        ),
-    ),
-    Document(
-        "MUSCLE_FATIGUE_TREMOR_ASSESSMENT.pdf", "Muscle Fatigue & Tremor Assessment", 2.7,
-        ("emg", "fatigue", "tremor", "muscle", "assessment"), "1.9 MB", 6,
-        "PLACEHOLDER SUMMARY\n\n"
-        "Guidance for interpreting sustained EMG fatigue markers and tremor patterns, with "
-        "rest, hydration, and workload adjustment recommendations.",
-        (
-            "Compare current EMG features against the personal baseline",
-            "Reduce workload and schedule rest",
-            "Check hydration and skin-electrode contact quality",
-            "Escalate if tremor persists after rest",
-        ),
-    ),
-]
-
-
-def render_mock_page(canvas: tk.Canvas, doc: Document, page_num: int) -> None:
-    """Draw a placeholder PDF page that scales to fit the canvas."""
+def render_pdf_page(canvas: tk.Canvas, doc: Document, page_num: int) -> None:
+    """Display an actual PDF page from fadocs; never draw synthetic content."""
     canvas.delete("all")
-    cw = canvas.winfo_width()
-    ch = canvas.winfo_height()
-    if cw < 60 or ch < 60:
-        return
-
-    # PDF RENDER HOOK: replace the mock drawing below with a real page render, e.g.
-    #   import fitz  # pymupdf
-    #   page = fitz.open(f"fadocs/{doc.filename}")[page_num - 1]
-    #   pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-    #   -> PIL.Image -> ImageTk.PhotoImage (keep a reference) -> canvas.create_image(...)
-    ph = ch - 24
-    pw = ph * 8.5 / 11
-    if pw > cw - 24:
-        pw = cw - 24
-        ph = pw * 11 / 8.5
-    x0 = (cw - pw) / 2
-    y0 = (ch - ph) / 2
-    margin = pw * 0.08
-
-    canvas.create_rectangle(x0 + 5, y0 + 5, x0 + pw + 5, y0 + ph + 5, fill="#15181d", outline="")
-    canvas.create_rectangle(x0, y0, x0 + pw, y0 + ph, fill="#f4f4f2", outline="#c9c9c4")
-    canvas.create_text(
-        x0 + margin, y0 + margin, anchor="nw", width=pw - 2 * margin, text=doc.title.upper(),
-        fill="#1b1f24", font=("Helvetica", max(8, int(pw * 0.035)), "bold"),
-    )
-    rule_y = y0 + margin + ph * 0.07
-    canvas.create_rectangle(x0 + margin, rule_y, x0 + pw - margin, rule_y + 2, fill="#b02a2a", outline="")
-
-    line_h = max(6.0, ph * 0.025)
-    y = rule_y + line_h
-    i = 0
-    while y < y0 + ph - margin * 1.6:
-        frac = 0.55 + 0.45 * abs(math.sin(i * 1.7 + page_num))
-        canvas.create_rectangle(
-            x0 + margin, y, x0 + margin + (pw - 2 * margin) * frac, y + line_h * 0.45,
-            fill="#c4c7cc", outline="",
-        )
-        y += line_h
-        i += 1
-        if i % 6 == 0:
-            y += line_h * 0.8
-    canvas.create_text(
-        x0 + pw / 2, y0 + ph - margin * 0.7, text=f"- {page_num} -  MOCK PAGE",
-        fill="#6b7280", font=(MONO, 9),
-    )
+    try:
+        import fitz
+        from PIL import Image, ImageTk
+        with fitz.open(os.path.join("fadocs", doc.filename)) as pdf:
+            page = pdf.load_page(page_num - 1)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False)
+            image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        image.thumbnail((max(1, canvas.winfo_width()-24), max(1, canvas.winfo_height()-24)))
+        canvas._page_image = ImageTk.PhotoImage(image)
+        canvas.create_image(canvas.winfo_width()//2, canvas.winfo_height()//2, image=canvas._page_image)
+    except Exception as exc:
+        canvas.create_text(canvas.winfo_width()//2, canvas.winfo_height()//2,
+            text=f"PDF preview unavailable\n{exc}", fill=RED, justify="center")
 
 
 class DocumentCard(ctk.CTkFrame):
@@ -1326,7 +1196,7 @@ class DocumentCard(ctk.CTkFrame):
         )
         title.grid(row=0, column=0, sticky="w", padx=(14, 8), pady=(12, 2))
 
-        self._stars = StarRating(self, doc.rating, DOC_CARD)
+        self._stars = ctk.CTkLabel(self, text=f"{doc.pages} pages", text_color=DOC_MUTED)
         self._stars.grid(row=0, column=1, sticky="e", padx=(8, 14), pady=(12, 2))
 
         tags = ctk.CTkLabel(
@@ -1413,9 +1283,8 @@ class DocumentModal(ctk.CTkToplevel):
             left, text=f"Size: {self._doc.size} | PDF", text_color=DOC_MUTED,
             font=ctk.CTkFont(size=12),
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        StarRating(left, self._doc.rating, DOC_PANEL, size=16).grid(
-            row=1, column=1, sticky="w", padx=(14, 0), pady=(4, 0)
-        )
+        ctk.CTkLabel(left, text=f"{self._doc.pages} pages", text_color=DOC_MUTED).grid(
+            row=1, column=1, sticky="w", padx=(14, 0), pady=(4, 0))
 
         ctk.CTkButton(
             top, text="[ ✕ Close ]", width=110, height=36, fg_color="#b62324",
@@ -1497,11 +1366,10 @@ class DocumentModal(ctk.CTkToplevel):
         self._page_label.configure(text=f"Page {self._current_page} / {total}")
         self._prev_btn.configure(state="normal" if self._current_page > 1 else "disabled")
         self._next_btn.configure(state="normal" if self._current_page < total else "disabled")
-        render_mock_page(self._pdf_canvas, self._doc, self._current_page)
+        render_pdf_page(self._pdf_canvas, self._doc, self._current_page)
 
     def _go(self, delta: int) -> None:
         self._current_page = max(1, min(self._doc.pages, self._current_page + delta))
-        print(f"PDF page -> {self._current_page} / {self._doc.pages}")
         self._refresh()
 
     def _toggle_expand(self) -> None:
@@ -1516,7 +1384,6 @@ class DocumentModal(ctk.CTkToplevel):
             self.grid_rowconfigure(2, weight=1)
             self._expand_btn.configure(text="[ ⤡ Restore ]")
         self._is_expanded = not self._is_expanded
-        print(f"PDF viewer expanded: {self._is_expanded}")
 
 
 class ArchivePage(ctk.CTkFrame):
@@ -1526,7 +1393,7 @@ class ArchivePage(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         # NOTE: not called "_root" - tkinter widgets have a _root() method of their own
         self._app_window = app_window
-        self._docs = MOCK_DOCUMENTS
+        self._docs = self._discover_documents()
         self._modal = None
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -1537,7 +1404,7 @@ class ArchivePage(ctk.CTkFrame):
 
         self._entry = ctk.CTkEntry(
             bar, height=40, corner_radius=10,
-            placeholder_text="Search emergency protocols, symptoms, or tags...",
+            placeholder_text="Search PDF filenames...",
         )
         self._entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         self._entry.bind("<Return>", lambda _e: self._on_search())
@@ -1554,9 +1421,22 @@ class ArchivePage(ctk.CTkFrame):
         self._list.grid_columnconfigure(0, weight=1)
         self._render(self._docs)
 
+    def _discover_documents(self) -> list[Document]:
+        result = []
+        for path in sorted(glob.glob(os.path.join("fadocs", "*.pdf"))):
+            name = os.path.basename(path); size = os.path.getsize(path)
+            try:
+                import fitz
+                with fitz.open(path) as pdf:
+                    pages = len(pdf); title = pdf.metadata.get("title") or os.path.splitext(name)[0]
+            except Exception:
+                pages = 0; title = os.path.splitext(name)[0]
+            result.append(Document(name, title.replace("_", " "), 0, (),
+                f"{size/1024/1024:.2f} MB", pages, "PDF document. No synthetic summary is shown.", ()))
+        return result
+
     def _on_search(self) -> None:
         query = self._entry.get().strip()
-        print(f"Searching: {query}")
         needle = query.lower().lstrip("#")
         if needle:
             docs = [
@@ -1573,7 +1453,7 @@ class ArchivePage(ctk.CTkFrame):
         for child in self._list.winfo_children():
             child.destroy()
         if not docs:
-            ctk.CTkLabel(self._list, text="No matching documents.", text_color=DOC_MUTED).grid(
+            ctk.CTkLabel(self._list, text="No matching PDF files in fadocs/.", text_color=DOC_MUTED).grid(
                 row=0, column=0, pady=30
             )
             return
@@ -1583,7 +1463,6 @@ class ArchivePage(ctk.CTkFrame):
             )
 
     def _open_document(self, doc: Document) -> None:
-        print(f"Opening document: {doc.filename}")
         if self._modal is not None:
             try:
                 if self._modal.winfo_exists():
@@ -1594,157 +1473,290 @@ class ArchivePage(ctk.CTkFrame):
 
 
 # ---------------------------------------------------------------------------
-# Page 4: placeholder
+# Page 4: runtime settings
 # ---------------------------------------------------------------------------
-class PlaceholderPage(ctk.CTkFrame):
-    """Stub page with a test button."""
-
-    def __init__(self, master: tk.Misc, title: str, number: int) -> None:
+class SettingsPage(ctk.CTkFrame):
+    """Runtime configuration and crew registration backed by .dat metadata."""
+    def __init__(self, master, app):
         super().__init__(master, fg_color="transparent")
-        ctk.CTkLabel(self, text=title, font=ctk.CTkFont(size=22, weight="bold")).pack(
-            anchor="w", padx=20, pady=(20, 8)
-        )
-        ctk.CTkLabel(self, text="Not implemented yet.", text_color=MUTED).pack(anchor="w", padx=20)
-        ctk.CTkButton(
-            self, text="Test button", width=120,
-            command=lambda: print(f"Test button clicked on page {number}"),
-        ).pack(anchor="w", padx=20, pady=16)
+        self.app = app
+        self.body = ctk.CTkScrollableFrame(self, fg_color="transparent", scrollbar_button_color="#34445b")
+        self.body.pack(fill="both", expand=True, padx=22, pady=18)
+
+        ctk.CTkLabel(self.body, text="Settings", font=ctk.CTkFont(size=28, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(self.body, text="Configure the Core data stream and manage crew profiles.", text_color=MUTED,
+                     font=ctk.CTkFont(size=13)).pack(anchor="w", pady=(3, 18))
+
+        self._build_data_panel()
+        self._build_registration()
+        self._build_roster()
+
+    def _panel(self, title, subtitle=None):
+        panel = ctk.CTkFrame(self.body, fg_color=PANEL_BG, corner_radius=16, border_width=1, border_color=PANEL_BORDER)
+        panel.pack(fill="x", pady=(0, 14))
+        head = ctk.CTkFrame(panel, fg_color="transparent")
+        head.pack(fill="x", padx=20, pady=(17, 12))
+        ctk.CTkLabel(head, text=title, font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w")
+        if subtitle:
+            ctk.CTkLabel(head, text=subtitle, text_color=MUTED, font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(3, 0))
+        return panel
+
+    def _build_data_panel(self):
+        panel = self._panel("Data connection", "The interface reads telemetry records written by Core.")
+        fields = ctk.CTkFrame(panel, fg_color="transparent")
+        fields.pack(fill="x", padx=20, pady=(0, 12))
+        fields.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(fields, text=".dat directory", text_color="#c7d3e2").grid(row=0, column=0, sticky="w", padx=(0, 14), pady=8)
+        self.path = ctk.CTkEntry(fields, height=38, fg_color=FIELD_BG, border_color=PANEL_BORDER, corner_radius=9)
+        self.path.insert(0, self.app.data_dir)
+        self.path.grid(row=0, column=1, sticky="ew", pady=8)
+        ctk.CTkLabel(fields, text="Refresh interval", text_color="#c7d3e2").grid(row=1, column=0, sticky="w", padx=(0, 14), pady=8)
+        self.interval = ctk.CTkEntry(fields, width=150, height=38, fg_color=FIELD_BG, border_color=PANEL_BORDER, corner_radius=9)
+        self.interval.insert(0, str(self.app.refresh_ms))
+        self.interval.grid(row=1, column=1, sticky="w", pady=8)
+        ctk.CTkLabel(fields, text="ms", text_color=MUTED).grid(row=1, column=1, sticky="w", padx=(160, 0))
+        check_icon = svg_icon("check", 16)
+        ctk.CTkButton(fields, text="Apply changes", image=check_icon, compound="left", height=38,
+                      corner_radius=9, fg_color=ACCENT, hover_color="#2d65d8", command=self.apply).grid(row=0, column=2, rowspan=2, padx=(18, 0))
+        self.status = ctk.CTkLabel(panel, text="Core entry point: Core.parse_packet(data: bytes)  →  <crew_id>.dat",
+                                   text_color=MUTED, font=ctk.CTkFont(size=11))
+        self.status.pack(anchor="w", padx=20, pady=(0, 16))
+
+    def _build_registration(self):
+        panel = self._panel("Register crew member", "Profile metadata is stored in the first JSONL line as the _meta header.")
+        grid = ctk.CTkFrame(panel, fg_color="transparent")
+        grid.pack(fill="x", padx=20, pady=(0, 14))
+        grid.grid_columnconfigure(1, weight=1)
+        grid.grid_columnconfigure(3, weight=1)
+        fields = [
+            ("Crew ID · 0–127", "crew_id", 0, 0),
+            ("Full name", "name", 0, 2),
+            ("Age", "age", 1, 0),
+            ("Position / role", "role", 1, 2),
+            ("Gender", "gender", 2, 0),
+        ]
+        self.fields = {}
+        for label, key, row, col in fields:
+            ctk.CTkLabel(grid, text=label, text_color="#c7d3e2", font=ctk.CTkFont(size=11, weight="bold")).grid(
+                row=row * 2, column=col, sticky="w", padx=(0, 10), pady=(8, 3))
+            entry = ctk.CTkEntry(grid, height=39, fg_color=FIELD_BG, border_color=PANEL_BORDER,
+                                 corner_radius=9, placeholder_text=label)
+            entry.grid(row=row * 2 + 1, column=col, sticky="ew", padx=(0, 16), pady=(0, 7))
+            self.fields[key] = entry
+        user_icon = svg_icon("user-plus", 17)
+        ctk.CTkButton(grid, text="Register profile", image=user_icon, compound="left", height=40,
+                      corner_radius=9, fg_color=ACCENT, hover_color="#2d65d8", command=self.register).grid(
+            row=6, column=0, columnspan=4, sticky="w", pady=(10, 0))
+
+    def _build_roster(self):
+        panel = self._panel("Crew directory", "Registered profiles found in the configured .dat directory.")
+        self.roster = ctk.CTkFrame(panel, fg_color="transparent")
+        self.roster.pack(fill="x", padx=12, pady=(0, 12))
+        self._refresh_roster()
+
+    def _refresh_roster(self):
+        for child in self.roster.winfo_children():
+            child.destroy()
+        if not self.app.crew:
+            ctk.CTkLabel(self.roster, text="No crew profiles found yet.", text_color=MUTED).pack(anchor="w", padx=10, pady=14)
+            return
+        for member in self.app.crew:
+            row = ctk.CTkFrame(self.roster, fg_color="#0e1826", corner_radius=11)
+            row.pack(fill="x", padx=4, pady=4)
+            avatar = ctk.CTkFrame(row, width=38, height=38, corner_radius=11, fg_color="#203858")
+            avatar.pack(side="left", padx=(10, 12), pady=9)
+            avatar.pack_propagate(False)
+            initials = "".join(part[0] for part in member.name.split()[:2]).upper() or "?"
+            ctk.CTkLabel(avatar, text=initials, text_color="#dceaff", font=ctk.CTkFont(size=12, weight="bold")).place(relx=.5, rely=.5, anchor="center")
+            details = ctk.CTkFrame(row, fg_color="transparent")
+            details.pack(side="left", fill="x", expand=True, pady=8)
+            ctk.CTkLabel(details, text=member.name, font=ctk.CTkFont(size=13, weight="bold"), anchor="w").pack(anchor="w")
+            sub = f"ID {member.crew_id}  ·  {member.age if member.age is not None else '—'} y.o.  ·  {member.role}  ·  {member.gender}"
+            ctk.CTkLabel(details, text=sub, text_color=MUTED, font=ctk.CTkFont(size=10), anchor="w").pack(anchor="w", pady=(2, 0))
+            trash_icon = svg_icon("trash", 15)
+            ctk.CTkButton(row, text="Delete", image=trash_icon, compound="left", width=92, height=32,
+                          corner_radius=8, fg_color="#572a38", hover_color="#7a3448",
+                          command=lambda m=member: self.delete_member(m)).pack(side="right", padx=12, pady=10)
+
+    def apply(self):
+        try:
+            path = self.path.get().strip()
+            interval = int(self.interval.get())
+            if not path:
+                raise ValueError("Data directory is required")
+            if interval < 100:
+                raise ValueError("Refresh interval must be at least 100 ms")
+            self.app.data_dir = path
+            self.app.refresh_ms = interval
+            self.app.refresh_data(force=True)
+            self.status.configure(text="Settings applied · Core.parse_packet(data: bytes) → .dat", text_color=GREEN)
+            self._refresh_roster()
+            if hasattr(self.app, "_poll_job") and self.app._poll_job:
+                self.app.after_cancel(self.app._poll_job)
+            self.app._poll_job = self.app.after(self.app.refresh_ms, self.app._poll_data)
+        except (OSError, ValueError) as exc:
+            self.status.configure(text=str(exc), text_color=RED)
+
+    def register(self):
+        try:
+            crew_id = int(self.fields["crew_id"].get().strip())
+            name = self.fields["name"].get().strip()
+            age = int(self.fields["age"].get().strip())
+            role = self.fields["role"].get().strip()
+            gender = self.fields["gender"].get().strip()
+            if not 0 <= crew_id <= 127:
+                raise ValueError("Crew ID must be between 0 and 127")
+            if not name or not role or not gender:
+                raise ValueError("Name, position and gender are required")
+            if not 1 <= age <= 120:
+                raise ValueError("Age must be between 1 and 120")
+            self.app.register_crew(crew_id, name, age, role, gender)
+            for entry in self.fields.values():
+                entry.delete(0, "end")
+            self.status.configure(text=f"Profile saved · {name} (ID {crew_id})", text_color=GREEN)
+            self._refresh_roster()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self.status.configure(text=str(exc), text_color=RED)
+
+    def delete_member(self, member):
+        if not messagebox.askyesno("Delete crew member", f"Delete {member.name} (ID {member.crew_id}) and its .dat file?\nThis action cannot be undone.", parent=self):
+            return
+        try:
+            self.app.delete_crew(member.crew_id)
+            self.status.configure(text=f"Profile deleted · {member.name}", text_color=GREEN)
+            self._refresh_roster()
+        except OSError as exc:
+            self.status.configure(text=str(exc), text_color=RED)
 
 
 # ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
 class Interface(ctk.CTk):
-    """Main window, router and application controller."""
+    """Poll Core's per-crew .dat JSONL files and render their actual contents."""
+    def __init__(self):
+        ctk.set_appearance_mode("dark"); ctk.set_default_color_theme("blue"); super().__init__()
+        self.configure(fg_color=APP_BG)
+        self.title(APP_TITLE); self.geometry(WINDOW_SIZE); self.minsize(1280,780)
+        self.grid_columnconfigure(1,weight=1); self.grid_rowconfigure(0,weight=1)
+        self.data_dir=os.environ.get("CSOS_DATA_DIR","users"); self.refresh_ms=SIM_MS
+        self.crew=[]; self.current_page=None; self.pages={}
+        self.sidebar=Sidebar(self,self._on_nav); self.sidebar.grid(row=0,column=0,sticky="nsew")
+        self.content=ctk.CTkFrame(self,corner_radius=0,fg_color="transparent")
+        self.content.grid(row=0,column=1,sticky="nsew"); self.content.grid_columnconfigure(0,weight=1); self.content.grid_rowconfigure(0,weight=1)
+        self.page_builders={"overview":self.show_overview,"telemetry":self.show_telemetry,"archive":self.show_archive,"settings":self.show_settings}
+        self._poll_job = None
+        self.refresh_data(); self.navigate("overview"); self._poll_job = self.after(self.refresh_ms,self._poll_data)
 
-    def __init__(self) -> None:
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-        super().__init__()
+    def register_crew(self, crew_id, name, age, role, gender):
+        """Create or update the JSONL metadata header without losing telemetry."""
+        os.makedirs(self.data_dir, exist_ok=True)
+        path = os.path.join(self.data_dir, f"{int(crew_id)}.dat")
+        records = []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as stream:
+                for line in stream:
+                    if line.strip():
+                        item = json.loads(line)
+                        if "_meta" not in item:
+                            records.append(item)
+        metadata = {"schema": 1, "crew_id": int(crew_id), "name": name,
+                    "age": int(age), "role": role, "gender": gender}
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"_meta": metadata}, ensure_ascii=False) + "\n")
+            for record in records:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self.refresh_data(force=True)
 
-        self.title(APP_TITLE)
-        self.geometry(WINDOW_SIZE)
-        self.minsize(1280, 780)
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+    def delete_crew(self, crew_id):
+        path = os.path.join(self.data_dir, f"{int(crew_id)}.dat")
+        if os.path.exists(path):
+            os.remove(path)
+        self.refresh_data(force=True)
 
-        self.crew = self.load_mock_data()
-        init_runtime(self.crew)
-        self.tick = HIST_LEN
-        self.current_page = None
-        self.pages = {}
+    def _read_member_file(self,path):
+        meta={}; records=[]
+        with open(path,encoding="utf-8") as stream:
+            for line in stream:
+                if not line.strip(): continue
+                item=json.loads(line)
+                if "_meta" in item: meta.update(item["_meta"])
+                else: records.append(item)
+        crew_id=str(meta.get("crew_id",os.path.splitext(os.path.basename(path))[0]))
+        member=CrewMember(crew_id,name=meta.get("name","Unknown crew member"),gender=meta.get("gender","—"),age=meta.get("age"),role=meta.get("role","—"))
+        for rec in records: self._apply_record(member,rec)
+        member.source_file=path
+        return member
 
-        self.sidebar = Sidebar(self, self._on_nav)
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
-
-        self.content = ctk.CTkFrame(
-            self, corner_radius=0, fg_color="transparent"
-        )
-        self.content.grid(row=0, column=1, sticky="nsew")
-        self.content.grid_columnconfigure(0, weight=1)
-        self.content.grid_rowconfigure(0, weight=1)
-
-        self.page_builders = {
-            "overview": self.show_overview,
-            "telemetry": self.show_telemetry,
-            "archive": self.show_archive,
-            "settings": self.show_settings,
-        }
-
-        self.navigate("overview")
-        self.after(SIM_MS, self._simulate_tick)
-
-    # ------------------------------------------------------------------
-    # Data adapters
-    # ------------------------------------------------------------------
-    def load_mock_data(self) -> list[CrewMember]:
-        """Load demo crew data."""
-        return sample_crew()
-
-    def update_data(self) -> None:
-        """Replace with the real telemetry pipeline."""
-        self.tick += 1
-        now = datetime.now(timezone.utc)
-
-        for member in self.crew:
-            if not member.connected:
+    @staticmethod
+    def _apply_record(member,record):
+        data=record.get("data") or {}; stamp=datetime.fromtimestamp(record.get("timestamp",time.time()),timezone.utc)
+        member.seq=record.get("seq_count",member.seq); member.last_packet=stamp; member.last_seen=record.get("timestamp",member.last_seen)
+        for key,val in data.items():
+            if key=="computed_metrics":
+                if isinstance(val,(list,tuple)) and len(val)>=3: member.pulse,member.spo2,member.vel=val
                 continue
+            if key in ("vbat","+vBat"):
+                member.raw["vbat"]=(val,stamp)
+                try: member.battery=max(0,min(100,round((float(val)-3.3)/.9*100)))
+                except (TypeError,ValueError): pass
+                continue
+            member.raw[key]=(val,stamp)
+            if key in ("r1","ir1","r2","ir2"): member.ppg[("r1","ir1","r2","ir2").index(key)]=val
+            elif key=="h1": member.humidity=val
+            elif key.startswith(("t","p","e")) and key[1:].isdigit():
+                prefix=key[0]; index=int(key[1:])-1; arr=member.nodes[prefix]
+                while len(arr)<=index: arr.append(None)
+                arr[index]=val
+        member.connected=(time.time()-member.last_seen)<5
+        tvals=[v for v in member.nodes["t"] if v is not None]
+        pvals=[v for v in member.nodes["p"] if v is not None]
+        member.temp=sum(tvals)/len(tvals) if tvals else None
+        member.press=sum(pvals)/len(pvals) if pvals else None
+        if member.temp is not None: member.hist["temp"].append(member.temp)
+        if member.pulse is not None: member.hist["pulse"].append(member.pulse)
+        if member.spo2 is not None: member.hist["spo2"].append(member.spo2)
+        member.log.append(f"{stamp:%H:%M:%S} sensor={record.get('sensor_id')} seq={member.seq} data={data}")
 
-            jitter_crew(member, self.tick)
-            update_raw(member, self.tick, now)
-            member.seq += 1
-            member.uptime += SIM_MS / 1000
-            member.last_packet = now
+    def refresh_data(self,force=False):
+        os.makedirs(self.data_dir,exist_ok=True); loaded=[]
+        for path in sorted(glob.glob(os.path.join(self.data_dir,"*.dat"))):
+            try: loaded.append(self._read_member_file(path))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+        self.crew=loaded
+        if hasattr(self,"pages") and self.current_page == "overview" and "overview" in self.pages:
+            old=self.pages.pop("overview"); old.destroy()
+            page=self.show_overview(); self.pages["overview"]=page; page.grid(row=0,column=0,sticky="nsew")
+        elif hasattr(self,"pages") and self.current_page == "telemetry" and "telemetry" in self.pages:
+            page=self.pages["telemetry"]
+            page._crew=self.crew
+            page._index=min(page._index, max(0, len(self.crew)-1))
+            if not self.crew:
+                page.destroy(); self.pages.pop("telemetry",None)
+                self.pages["telemetry"]=self.show_telemetry(); self.pages["telemetry"].grid(row=0,column=0,sticky="nsew")
+            else:
+                page.show_crew()
 
-            line = format_packet(member, now)
-            member.log.append(line)
-
-            if self.current_page == "telemetry":
-                self.telemetry.on_packet(member, line)
-
-        if self.current_page == "telemetry":
-            self.telemetry.refresh()
-
-    # ------------------------------------------------------------------
-    # Router
-    # ------------------------------------------------------------------
-    def _on_nav(self, index: int) -> None:
-        page_names = ("overview", "telemetry", "archive", "settings")
-        if 0 <= index < len(page_names):
-            self.navigate(page_names[index])
-
-    def navigate(self, page_name: str) -> None:
-        """Switch the active page."""
-        builder = self.page_builders.get(page_name)
-        if builder is None:
-            raise ValueError(f"Unknown page: {page_name}")
-
-        if page_name not in self.pages:
-            self.pages[page_name] = builder()
-
-        for page in self.pages.values():
-            page.grid_remove()
-
-        self.pages[page_name].grid(
-            row=0, column=0, sticky="nsew"
-        )
-        self.pages[page_name].tkraise()
-
-        self.current_page = page_name
-        self.sidebar.set_active(
-            ("overview", "telemetry", "archive", "settings").index(page_name)
-        )
-
-        if page_name == "telemetry":
-            self.telemetry.show_crew()
-
-    # ------------------------------------------------------------------
-    # Pages
-    # ------------------------------------------------------------------
-    def show_overview(self) -> ctk.CTkFrame:
-        """Build the crew overview page."""
-        return OverviewPage(self.content, self.crew)
-
-    def show_telemetry(self) -> ctk.CTkFrame:
-        """Build the detailed telemetry page."""
-        self.telemetry = TelemetryPage(self.content, self.crew)
-        return self.telemetry
-
-    def show_archive(self) -> ctk.CTkFrame:
-        """Build the protocol archive page."""
-        return ArchivePage(self.content, self)
-
-    def show_settings(self) -> ctk.CTkFrame:
-        """Build the settings placeholder."""
-        return PlaceholderPage(self.content, NAV_ITEMS[3][1], 4)
-
-    # ------------------------------------------------------------------
-    # Runtime
-    # ------------------------------------------------------------------
-    def _simulate_tick(self) -> None:
-        """Run one simulation update."""
-        self.update_data()
-        self.after(SIM_MS, self._simulate_tick)
+    def _poll_data(self):
+        self.refresh_data(); self._poll_job = self.after(self.refresh_ms,self._poll_data)
+    def _on_nav(self,index):
+        names=("overview","telemetry","archive","settings")
+        if 0<=index<len(names): self.navigate(names[index])
+    def navigate(self,name):
+        if name not in self.pages: self.pages[name]=self.page_builders[name]()
+        for page in self.pages.values(): page.grid_remove()
+        self.pages[name].grid(row=0,column=0,sticky="nsew"); self.pages[name].tkraise(); self.current_page=name
+        self.sidebar.set_active(("overview","telemetry","archive","settings").index(name))
+        if name=="telemetry": self.telemetry.show_crew()
+    def show_overview(self): return OverviewPage(self.content,self.crew,self.open_member_details)
+    def open_member_details(self, member):
+        self.navigate("telemetry")
+        if self.crew and hasattr(self, "telemetry"):
+            self.telemetry.select_crew(next((i for i, item in enumerate(self.crew) if item.crew_id == member.crew_id), 0))
+    def show_telemetry(self): self.telemetry=TelemetryPage(self.content,self.crew); return self.telemetry
+    def show_archive(self): return ArchivePage(self.content,self)
+    def show_settings(self): return SettingsPage(self.content,self)
 
 
 if __name__ == "__main__":

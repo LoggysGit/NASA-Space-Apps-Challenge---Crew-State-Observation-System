@@ -2,7 +2,7 @@ import os
 import json
 import time
 import struct
-from datetime import datetime
+from datetime import datetime, timezone
 import numpy as np
 from scipy.signal import butter, lfilter
 import neurokit2 as nk
@@ -14,6 +14,30 @@ class Core:
             os.makedirs(self.data_dir)
         # Buffer for signal processing (per member)
         self.ppg_buffers = {}
+        self.crew_metadata = {}
+
+    def register_crew(self, crew_id: int, name: str, age: int, role: str, gender: str) -> None:
+        """Persist identity metadata as the first line of users/<crew_id>.dat.
+
+        Header: {"_meta":{"schema":1,"crew_id":16,"name":"...","age":34,"role":"...","gender":"F"}}
+        Remaining lines are telemetry records with timestamp, sensor_id, seq_count and data.
+        """
+        self.crew_metadata[int(crew_id)] = {"schema": 1, "crew_id": int(crew_id),
+            "name": str(name), "age": int(age), "role": str(role), "gender": str(gender)}
+        self._write_metadata(int(crew_id))
+
+    def _write_metadata(self, crew_id: int) -> None:
+        path=os.path.join(self.data_dir,f"{crew_id}.dat")
+        meta=self.crew_metadata.get(crew_id)
+        if meta is None: return
+        old=[]
+        if os.path.exists(path):
+            with open(path,encoding="utf-8") as stream:
+                for line in stream:
+                    if line.strip() and "_meta" not in json.loads(line): old.append(line)
+        with open(path,"w",encoding="utf-8") as stream:
+            stream.write(json.dumps({"_meta":meta},ensure_ascii=False)+"\n")
+            stream.writelines(old)
 
     def parse_packet(self, data: bytes) -> None:
         """Parse raw telemetry packet."""
@@ -49,22 +73,28 @@ class Core:
     def _decode_payload(self, sensor_id: int, payload: bytes) -> dict:
         """Decode raw payload bytes into units"""
         if sensor_id == 0x0:
-            vals = struct.unpack('4f', payload[:16]) if len(payload) >= 16 else (0,0,0,0)
+            if len(payload) < 16: return {}
+            vals = struct.unpack('>4f', payload[:16])
             return {"t1": vals[0], "t2": vals[1], "t3": vals[2], "t4": vals[3]}
         elif sensor_id == 0x1:
-            vals = struct.unpack('4f', payload[:16]) if len(payload) >= 16 else (0,0,0,0)
+            if len(payload) < 16: return {}
+            vals = struct.unpack('>4f', payload[:16])
             return {"p1": vals[0], "p2": vals[1], "p3": vals[2], "p4": vals[3]}
         elif sensor_id == 0x2:
-            vals = struct.unpack('6f', payload[:24]) if len(payload) >= 24 else (0,0,0,0,0,0)
+            if len(payload) < 24: return {}
+            vals = struct.unpack('>6f', payload[:24])
             return {f"e{i+1}": vals[i] for i in range(6)}
         elif sensor_id == 0x3:
-            vals = struct.unpack('4f', payload[:16]) if len(payload) >= 16 else (0,0,0,0)
+            if len(payload) < 16: return {}
+            vals = struct.unpack('>4f', payload[:16])
             return {"r1": vals[0], "ir1": vals[1], "r2": vals[2], "ir2": vals[3]}
         elif sensor_id == 0x4:
-            val = struct.unpack('f', payload[:4])[0] if len(payload) >= 4 else 0.0
+            if len(payload) < 4: return {}
+            val = struct.unpack('>f', payload[:4])[0]
             return {"h1": val}
         elif sensor_id == 0x5:
-            val = struct.unpack('f', payload[:4])[0] if len(payload) >= 4 else 0.0
+            if len(payload) < 4: return {}
+            val = struct.unpack('>f', payload[:4])[0]
             return {"vbat": val}
         return {}
 
@@ -110,16 +140,17 @@ class Core:
         r1_arr = np.array(buf.get("r1", []))
         ir1_arr = np.array(buf.get("ir1", []))
         
-        if len(r1_arr) < 30:
-            return 72.0, 98.0, 12.0 # Mock values (first milliseconds, we need to gain enough data to process)
+        if len(r1_arr) < 30 or len(ir1_arr) < 30:
+            return None, None, None
             
         try:
             cleaned = nk.ppg_clean(r1_arr, sampling_rate=100)
             signals, info = nk.ppg_peaks(cleaned, sampling_rate=100)
             peaks = info.get("PPG_Peaks", [])
             
-            hr = float(np.mean(nk.signal_rate(peaks, sampling_rate=100))) if len(peaks) > 0 else 72.0
-            if np.isnan(hr): hr = 72.0
+            if len(peaks) < 2: return None, None, None
+            hr = float(np.mean(nk.signal_rate(peaks, sampling_rate=100)))
+            if not np.isfinite(hr): return None, None, None
             
             ac_r, dc_r = np.std(r1_arr), np.mean(r1_arr) if np.mean(r1_arr) != 0 else 1.0
             ac_ir, dc_ir = np.std(ir1_arr), np.mean(ir1_arr) if np.mean(ir1_arr) != 0 else 1.0
@@ -134,10 +165,11 @@ class Core:
     def _save_point_to_file(self, crew_id: int, sensor_id: int, timestamp: float, seq_count: int, data: dict) -> None:
         """ Append point to dat file (24-hour window) """
         file_path = os.path.join(self.data_dir, f"{crew_id}.dat")
-        
+        if crew_id in self.crew_metadata and not os.path.exists(file_path):
+            self._write_metadata(crew_id)
         record = {
             "timestamp": timestamp,
-            "iso_time": datetime.fromtimestamp(timestamp).isoformat(),
+            "iso_time": datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
             "sensor_id": sensor_id,
             "seq_count": seq_count,
             "data": data
@@ -145,23 +177,23 @@ class Core:
         
         cutoff_time = timestamp - 86400
         valid_records = []
-        
+        metadata_line = None
         if os.path.exists(file_path):
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     for line in f:
                         if line.strip():
                             item = json.loads(line)
-                            if item.get("timestamp", 0) >= cutoff_time:
-                                valid_records.append(item)
+                            if "_meta" in item: metadata_line = item
+                            elif item.get("timestamp", 0) >= cutoff_time: valid_records.append(item)
             except Exception:
                 pass
                 
         valid_records.append(record)
         
         with open(file_path, "w", encoding="utf-8") as f:
-            for item in valid_records:
-                f.write(json.dumps(item) + "\n")
+            if metadata_line is not None: f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
+            for item in valid_records: f.write(json.dumps(item) + "\n")
 
     def get_metatags(telemetry: list) -> list:
         """ Returns an array of metatags depending on member's state """

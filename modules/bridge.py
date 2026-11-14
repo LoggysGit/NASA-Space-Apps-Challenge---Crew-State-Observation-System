@@ -6,38 +6,74 @@ import logging
 logger = logging.getLogger("Bridge")
 
 class BridgeWin:
-    """ Bridge for windows """
-    def __init__(self, core_instance, bind_ip="0.0.0.0", port=8888):
+    """UDP Bridge for Windows"""
+
+    def __init__(self, sys_queue, gui_queue, core_instance, bind_ip="0.0.0.0", port=5005):
+        self.sys_queue = sys_queue
+        self.gui_queue = gui_queue
+
         self.core = core_instance
         self.bind_ip = bind_ip
         self.port = port
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock = None
         self.is_running = False
 
     def start(self):
-        """ Start listening """
-        self.sock.bind((self.bind_ip, self.port))
-        self.is_running = True
-        logger.info(f"[BridgeWin] Started UDP listener on {self.bind_ip}:{self.port}")
+        """Start UDP listener"""
+
+        if self.is_running:
+            return
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.settimeout(1.0)
 
         try:
+            self.sock.bind((self.bind_ip, self.port))
+            self.is_running = True
+
+            logger.info(
+                f"[BridgeWin] Listening on {self.bind_ip}:{self.port}"
+            )
+
             while self.is_running:
-                data, addr = self.sock.recvfrom(65535)
-                if data:
-                    print(f"DATA HERE!! {data}")
+                try:
+                    data, addr = self.sock.recvfrom(65535)
+
+                    if not data:
+                        continue
+
+                    logger.info(
+                        f"[BridgeWin] Received {len(data)} bytes from {addr}"
+                    )
+
+                    print(f"DATA HERE!! {data.hex(' ')}")
+
                     self.core.parsePacket(data)
-        except Exception as e:
-            logger.error(f"[BridgeWin Error]: {e}")
+
+                except socket.timeout:
+                    continue
+
+                except OSError:
+                    if self.is_running:
+                        raise
+
+        except Exception:
+            logger.exception("[BridgeWin Error]")
+
         finally:
             self.stop()
 
     def stop(self):
-        """ Stop thread """
-        self.is_running = False
-        self.sock.close()
-        logger.info("[BridgeWin] Stopped.")
+        """Stop UDP listener"""
 
+        self.is_running = False
+
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+
+        logger.info("[BridgeWin] Stopped.")
 
 class BridgeLinux:
     """ Bridge for linux """
