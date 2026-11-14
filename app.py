@@ -14,25 +14,25 @@ def system_thread(
 
     bridge.start()
 
-    while True:
-        item = sys_buffer.get()
-
-        try:
-            command, payload = item
-
-            match command:
-                # Unknown command #
-                case _:
-                    lib.dbg(f"Unknown command: {command}")
-
-        except ValueError:
-            lib.log(f"Wrong command structure (CMD, PAYLOAD): {item}")
-
-        except Exception as e:
-            lib.log(f"System thread error: {e}")
-
-        finally:
-            sys_buffer.task_done()
+    #while True:
+    #    item = sys_buffer.get()
+#
+    #    try:
+    #        command, payload = item
+#
+    #        match command:
+    #            # Unknown command #
+    #            case _:
+    #                lib.dbg(f"Unknown command: {command}")
+#
+    #    except ValueError:
+    #        lib.log(f"Wrong command structure (CMD, PAYLOAD): {item}")
+#
+    #    except Exception as e:
+    #        lib.log(f"System thread error: {e}")
+#
+    #    finally:
+    #        sys_buffer.task_done()
 
 if __name__ == "__main__":
     # App command queues

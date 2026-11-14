@@ -17,6 +17,7 @@ authors = [
 
 dependencies = [
     # Main libs
+    "PyMuPDF",
     "customtkinter>=5.2.2",
     "pillow>=10.0.0",
     "pyqtgraph>=0.13.7",

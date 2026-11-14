@@ -41,6 +41,7 @@ class BridgeWin:
                     data, addr = self.sock.recvfrom(65535)
 
                     if not data:
+                        print("[BRDG] -")
                         continue
 
                     logger.info(

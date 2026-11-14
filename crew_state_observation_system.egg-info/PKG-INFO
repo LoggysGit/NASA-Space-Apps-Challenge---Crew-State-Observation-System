@@ -6,6 +6,8 @@ Author: loggys, yaro_krst,
 License: MIT
 Requires-Python: <3.13,>=3.10
 Description-Content-Type: text/markdown
+Requires-Dist: cairosvg
+Requires-Dist: PyMuPDF
 Requires-Dist: customtkinter>=5.2.2
 Requires-Dist: pillow>=10.0.0
 Requires-Dist: pyqtgraph>=0.13.7
