@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: crew-state-observation-system
+Version: 0.1.0
+Summary: -
+Author: loggys, yaro_krst, 
+License: MIT
+Requires-Python: <3.13,>=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: customtkinter>=5.2.2
+Requires-Dist: pillow>=10.0.0
+Requires-Dist: pyqtgraph>=0.13.7
+Requires-Dist: matplotlib>=3.8.0
+Requires-Dist: pyserial>=3.5
+Requires-Dist: numpy<2.0.0,>=1.26.0
+Requires-Dist: pandas>=2.2.0
+Requires-Dist: scipy>=1.12.0
+Requires-Dist: neurokit2>=0.2.7
+Requires-Dist: biosppy>=2.2.2

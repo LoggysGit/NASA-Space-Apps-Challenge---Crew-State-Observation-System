@@ -1,0 +1,2 @@
+[console_scripts]
+crew-sos = app:main

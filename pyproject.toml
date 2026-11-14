@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crew-state-observation-system"
+version = "0.1.0"
+description = "-"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "loggys" },
+    { name = "yaro_krst" },
+    { name = "" },
+]
+
+dependencies = [
+    # Main libs
+    "customtkinter>=5.2.2",
+    "pillow>=10.0.0",
+    "pyqtgraph>=0.13.7",
+    "matplotlib>=3.8.0",
+    "pyserial>=3.5",
+
+    # Arrays & Matrixes
+    "numpy>=1.26.0,<2.0.0",
+    "pandas>=2.2.0",
+
+    # DSP
+    "scipy>=1.12.0",
+    "neurokit2>=0.2.7",
+    "biosppy>=2.2.2",
+]
+
+[project.scripts]
+crew-sos = "app:main"
+
+[tool.setuptools]
+py-modules = ["app"]
+
+[tool.setuptools.packages.find]
+include = ["modules*"]
