@@ -209,6 +209,7 @@ class CrewMember:
         self.pulse = None
         self.spo2 = None
         self.overall_health = None
+        self.stress_level = None
         self.vel = None
         self.humidity = None
         self.ppg = [None] * 4
@@ -476,7 +477,7 @@ class StarRating(tk.Canvas):
                        
                                                                              
 class CrewCard(ctk.CTkFrame):
-    """Summary card of a single crew member."""
+    """Compact crew summary with health, stress, vital averages and battery."""
 
     def __init__(self, master: tk.Misc, member: CrewMember, on_details: Callable[[CrewMember], None] | None = None) -> None:
         self._on_details = on_details
@@ -488,9 +489,10 @@ class CrewCard(ctk.CTkFrame):
         self.pack_propagate(False)
         self.grid_propagate(False)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(6, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
         self._build_top(member)
+        self._build_health_stress(member)
         self._build_figure(member)
         self._build_vitals(member)
         self._build_footer(member)
@@ -505,114 +507,150 @@ class CrewCard(ctk.CTkFrame):
         rgb = tuple(round(end[i] + (start[i] - end[i]) * ratio) for i in range(3))
         return "#" + "".join(f"{channel:02x}" for channel in rgb)
 
+    @staticmethod
+    def _average(values) -> float | None:
+        valid = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
+        return sum(valid) / len(valid) if valid else None
+
+    @staticmethod
+    def _battery_percent(member: CrewMember) -> tuple[str, bool]:
+        # Prefer a real state-of-charge field when Core supplies one.
+        for key in ("battery_percent", "battery_pct", "battery_soc_pct", "soc_pct", "charge_pct"):
+            item = member.raw.get(key) or member.raw.get(f"telemetry:{key}")
+            value = item[0] if isinstance(item, tuple) and item else item
+            if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                return f"{max(0, min(100, round(float(value))))}%", False
+
+        item = member.raw.get("vbat")
+        voltage = item[0] if isinstance(item, tuple) and item else item
+        if isinstance(voltage, (int, float)) and math.isfinite(float(voltage)):
+            voltage = float(voltage)
+            if voltage > 100:  # raw sensor packets may report millivolts
+                voltage /= 1000.0
+            # Approximate single-cell Li-ion state of charge from voltage only.
+            percent = round(max(0.0, min(100.0, (voltage - 3.3) / 0.9 * 100.0)))
+            return f"~{percent}%", True
+        return "—", False
+
     def _build_top(self, member: CrewMember) -> None:
         top = ctk.CTkFrame(self, fg_color="transparent")
-        top.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 0))
+        top.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 0))
         top.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             top, text=member.name, font=ctk.CTkFont(size=18, weight="bold"), anchor="w"
         ).grid(row=0, column=0, sticky="w")
+        self._battery_label = ctk.CTkLabel(
+            top, text="", font=ctk.CTkFont(size=12, weight="bold"), anchor="e"
+        )
+        self._battery_label.grid(row=0, column=1, sticky="e", padx=(6, 0))
         ctk.CTkButton(
-            top, text="i", width=26, height=26, corner_radius=13,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            command=lambda: self._on_details(member) if self._on_details else None,
-        ).grid(row=0, column=1, sticky="e")
+            top, text="i", width=24, height=24, corner_radius=12,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=lambda: self._on_details(self._member) if self._on_details else None,
+        ).grid(row=0, column=2, sticky="e", padx=(6, 0))
         ctk.CTkLabel(
             self, text=f"ID: {member.crew_id}", text_color=MUTED,
             font=ctk.CTkFont(size=11), anchor="w",
-        ).grid(row=1, column=0, sticky="w", padx=16)
-        health_text = (
-            f"Overall health: {member.overall_health:.1f}%"
-            if member.overall_health is not None else "Overall health: —"
-        )
+        ).grid(row=1, column=0, sticky="w", padx=16, pady=(2, 0))
+        self._update_battery(member)
+
+    def _build_health_stress(self, member: CrewMember) -> None:
+        metrics = ctk.CTkFrame(self, fg_color="transparent")
+        metrics.grid(row=2, column=0, sticky="ew", padx=14, pady=(10, 0))
+        metrics.grid_columnconfigure((0, 1), weight=1, uniform="top_metrics")
         self._health_label = ctk.CTkLabel(
-            self, text=health_text, text_color=MUTED,
-            font=ctk.CTkFont(size=12), anchor="w",
+            metrics, text="", anchor="w", font=ctk.CTkFont(size=11, weight="bold")
         )
-        self._health_label.grid(row=2, column=0, sticky="w", padx=16, pady=(10, 0))
+        self._health_label.grid(row=0, column=0, sticky="ew", padx=(2, 4))
+        self._stress_label = ctk.CTkLabel(
+            metrics, text="", anchor="w", font=ctk.CTkFont(size=11, weight="bold")
+        )
+        self._stress_label.grid(row=0, column=1, sticky="ew", padx=(4, 2))
+        self._update_health_stress(member)
 
     def _build_figure(self, member: CrewMember) -> None:
         row = ctk.CTkFrame(self, fg_color="transparent")
-        row.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 0))
+        row.grid(row=3, column=0, sticky="nsew", padx=16, pady=(8, 0))
         row.grid_columnconfigure(0, weight=1)
-        portrait = UIHelpers.gender_image(member.gender)
+        portrait = UIHelpers.gender_image(member.gender, size=(132, 198))
         if portrait is not None:
-            portrait_label = ctk.CTkLabel(row, text="", image=portrait, width=140, height=210)
+            portrait_label = ctk.CTkLabel(row, text="", image=portrait, width=140, height=198)
             portrait_label.grid(row=0, column=0, sticky="w")
         ctk.CTkButton(
             row, text="More...", width=84,
-            command=lambda: self._on_details(member) if self._on_details else None,
-        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+            command=lambda: self._on_details(self._member) if self._on_details else None,
+        ).grid(row=0, column=1, sticky="se", padx=(8, 0), pady=(0, 4))
+
+    def _vital_values(self, member: CrewMember):
+        avg_temp = self._average(member.nodes.get("t", []))
+        avg_pressure = self._average(member.nodes.get("p", []))
+        if avg_pressure is not None and avg_pressure > 2000:
+            avg_pressure /= 1000.0  # raw pressure packets are in Pa; telemetry snapshots use kPa
+        return (
+            f"Average temp: {avg_temp:.1f} °C" if avg_temp is not None else "Average temp: —",
+            f"Average press: {avg_pressure:.1f} kPa" if avg_pressure is not None else "Average press: —",
+            f"BPM: {float(member.pulse):.0f}" if member.pulse is not None else "BPM: —",
+            f"SpO2: {float(member.spo2):.1f}%" if member.spo2 is not None else "SpO2: —",
+        )
 
     def _build_vitals(self, member: CrewMember) -> None:
         vitals = ctk.CTkFrame(self, fg_color="transparent")
-        vitals.grid(row=5, column=0, sticky="ew", padx=16, pady=(10, 0))
+        vitals.grid(row=4, column=0, sticky="ew", padx=14, pady=(4, 0))
         vitals.grid_columnconfigure((0, 1), weight=1, uniform="vitals")
-        cells = (
-            f"t nodes: {len(member.nodes['t'])}/4",
-            f"p nodes: {len(member.nodes['p'])}/4",
-            f"Pulse: {member.pulse:.0f}" if member.pulse is not None else "Pulse: —",
-            f"SpO2: {member.spo2:g}%" if member.spo2 is not None else "SpO2: —",
-        )
-        for i, text in enumerate(cells):
-            ctk.CTkLabel(vitals, text=text, anchor="w", font=ctk.CTkFont(size=13)).grid(
-                row=i // 2, column=i % 2, sticky="w", pady=2
-            )
+        self._vital_labels = []
+        for i, text in enumerate(self._vital_values(member)):
+            label = ctk.CTkLabel(vitals, text=text, anchor="w", font=ctk.CTkFont(size=10))
+            label.grid(row=i // 2, column=i % 2, sticky="w", padx=2, pady=3)
+            self._vital_labels.append(label)
 
     def _build_footer(self, member: CrewMember) -> None:
         footer = ctk.CTkFrame(self, fg_color="transparent")
-        footer.grid(row=6, column=0, sticky="sew", padx=16, pady=(10, 14))
+        footer.grid(row=5, column=0, sticky="sew", padx=16, pady=(6, 12))
         footer.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            footer, text="● Receiving" if member.connected else "● No recent data",
-            text_color=GREEN if member.connected else RED, font=ctk.CTkFont(size=12),
-        ).grid(row=0, column=0, sticky="w")
-        battery = member.raw.get("vbat")
-        battery_text = f"{float(battery[0]):.3f} V" if battery else "Battery —"
-        ctk.CTkLabel(footer, text=battery_text, font=ctk.CTkFont(size=12)).grid(row=0, column=1, sticky="e")
+        self._connection_label = ctk.CTkLabel(
+            footer, text="", font=ctk.CTkFont(size=12), anchor="w"
+        )
+        self._connection_label.grid(row=0, column=0, sticky="w")
+        self._update_connection(member)
+
+    def _update_health_stress(self, member: CrewMember) -> None:
+        health = f"Overall health: {member.overall_health:.1f}%" if member.overall_health is not None else "Overall health: —"
+        stress = member.stress_level
+        if isinstance(stress, (int, float)) and math.isfinite(float(stress)):
+            stress_text = f"Stress level: {float(stress):.0f}%"
+        elif stress is not None:
+            stress_text = f"Stress level: {stress}"
+        else:
+            stress_text = "Stress level: —"
+        self._health_label.configure(text=health)
+        self._stress_label.configure(text=stress_text)
+
+    def _update_battery(self, member: CrewMember) -> None:
+        value, estimated = self._battery_percent(member)
+        self._battery_label.configure(text=f"Battery {value}")
+
+    def _update_connection(self, member: CrewMember) -> None:
+        self._connection_label.configure(
+            text="● Receiving" if member.connected else "● No recent data",
+            text_color=GREEN if member.connected else RED,
+        )
 
     def refresh(self, member: CrewMember) -> None:
-        """Refresh existing card labels without rebuilding the card."""
+        """Refresh card values without rebuilding the card."""
         self._member = member
-        labels = self.winfo_children()
-        top = labels[0] if labels else None
-        if top is not None:
-            top_labels = top.winfo_children()
-            if top_labels:
-                top_labels[0].configure(text=member.name)
+        top = self.winfo_children()[0]
+        top_labels = top.winfo_children()
+        if top_labels:
+            top_labels[0].configure(text=member.name)
         for widget in self.winfo_children():
-            if isinstance(widget, ctk.CTkLabel):
-                text = widget.cget("text")
-                if str(text).startswith("ID:"):
-                    widget.configure(text=f"ID: {member.crew_id}")
-        health_text = (
-            f"Overall health: {member.overall_health:.1f}%"
-            if member.overall_health is not None else "Overall health: —"
-        )
-        self._health_label.configure(text=health_text)
+            if isinstance(widget, ctk.CTkLabel) and str(widget.cget("text")).startswith("ID:"):
+                widget.configure(text=f"ID: {member.crew_id}")
+        self._update_health_stress(member)
+        self._update_battery(member)
+        self._update_connection(member)
+        for widget, text in zip(self._vital_labels, self._vital_values(member)):
+            widget.configure(text=text)
         self.configure(border_color=self._health_color(member.overall_health))
-        rows = [child for child in self.winfo_children() if isinstance(child, ctk.CTkFrame)]
-        if len(rows) > 2:
-            vitals = rows[2].winfo_children()
-            cells = (
-                f"t nodes: {len(member.nodes['t'])}/4",
-                f"p nodes: {len(member.nodes['p'])}/4",
-                f"Pulse: {member.pulse:.0f}" if member.pulse is not None else "Pulse: —",
-                f"SpO2: {member.spo2:g}%" if member.spo2 is not None else "SpO2: —",
-            )
-            for widget, text in zip(vitals, cells):
-                widget.configure(text=text)
-        if rows:
-            footer = rows[-1]
-            footer_labels = [w for w in footer.winfo_children() if isinstance(w, ctk.CTkLabel)]
-            if footer_labels:
-                footer_labels[0].configure(
-                    text="● Receiving" if member.connected else "● No recent data",
-                    text_color=GREEN if member.connected else RED,
-                )
-            battery = member.raw.get("vbat")
-            if len(footer_labels) > 1:
-                footer_labels[1].configure(text=f"{float(battery[0]):.3f} V" if battery else "Battery —")
 
 
 class OverviewPage(ctk.CTkFrame):
@@ -637,7 +675,7 @@ class OverviewPage(ctk.CTkFrame):
         self._body.grid_columnconfigure(0, weight=1)
         self._on_details = on_details
         self._all_strip = self._make_section("ALL CREW", 0)
-        self._critical_strip = self._make_section("КРИТИЧЕСКОЕ СОСТОЯНИЕ", 2)
+        self._critical_strip = self._make_section("CRITICAL CONDITION", 2)
         self._all_cards = []
         self._critical_cards = []
         self.set_members(crew)
@@ -666,7 +704,7 @@ class OverviewPage(ctk.CTkFrame):
         for card in cards:
             card.destroy()
         if not members:
-            message = "No crew members" if strip is self._all_strip else "Нет участников с overall health ниже 10%"
+            message = "No crew members" if strip is self._all_strip else "No crew members with overall health below 10%"
             label = ctk.CTkLabel(strip, text=message, text_color=MUTED)
             label.pack(anchor="w", padx=16, pady=20)
             return [label]
@@ -1969,6 +2007,9 @@ class CrewDataRepository:
             health_value = data.get("overall_health_pct", data.get("overall_health"))
             if isinstance(health_value, (int, float)) and math.isfinite(float(health_value)):
                 member.overall_health = float(health_value)
+            stress_value = data.get("stress_level_pct", data.get("stress_pct", data.get("stress_level")))
+            if isinstance(stress_value, (int, float, str)):
+                member.stress_level = stress_value
             for key, value in data.items():
                 member.raw[key] = (value, stamp)
                 if key in ("vbat", "+vBat"):
@@ -2015,6 +2056,9 @@ class CrewDataRepository:
                 health_value = data.get("overall_health", record.get("overall_health"))
             if isinstance(health_value, (int, float)) and math.isfinite(float(health_value)):
                 member.overall_health = float(health_value)
+            stress_value = data.get("stress_level_pct", data.get("stress_pct", data.get("stress_level")))
+            if isinstance(stress_value, (int, float, str)):
+                member.stress_level = stress_value
 
             pulse = data.get("pulse_bpm")
             spo2 = data.get("spo2_pct")

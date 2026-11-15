@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "title": "Crew Protocol: Altitude Sickness and Hypoxia Management",
+  "summary": "Official guidelines and contingency measures for recognizing and treating hypoxia and altitude sickness (AMS, HAPE, HACE) during space flight operations[cite: 9, 10].",
+  "points": [
+    "Immediate administration of 100% oxygen using a Quick-Don Mask upon recognizing acute hypoxic exposure or cabin pressure loss[cite: 9, 10].",
+    "Isolate the affected crew member or the compromising module by sealing it off and moving to another module or the Soyuz[cite: 10].",
+    "Utilize required medical resources such as blood oximeters, variable oxygen systems, and appropriate medications (e.g., Diamox, Dexamethasone) depending on the severity of the scenario[cite: 13, 16, 17]."
+  ],
+  "tags": [
+    "crew",
+    "protocol",
+    "safety"
+  ],
+  "keywords": [
+    "monitoring",
+    "spaceflight",
+    "telemetry"
+  ],
+  "author": "cSOS Research Team",
+  "category": "Crew Operations",
+  "date": "2026-11-15"
+}
