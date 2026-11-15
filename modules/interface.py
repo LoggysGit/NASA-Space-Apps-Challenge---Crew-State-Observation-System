@@ -17,10 +17,7 @@ import time
 import re
 from typing import Callable
 from PIL import Image
-import customtkinter as ctk
-
-                                                                             
-           
+import customtkinter as ctk                                                              
                                                                              
 SYSTEM_NAME = "cSOS (Crew State Observation System)"
 APP_TITLE = SYSTEM_NAME
@@ -39,9 +36,7 @@ APP_BG = "#0b1220"
 PANEL_BG = "#121c2b"
 PANEL_BORDER = "#26364b"
 FIELD_BG = "#0d1726"
-
-
-                          
+               
 DOC_CARD = "#1c2128"
 DOC_CARD_HOVER = "#262d36"
 DOC_BORDER = "#30363d"
@@ -59,8 +54,8 @@ LOG_VISIBLE = 80
 HISTORY_KEYS = ("temperature", "pulse", "spo2")
 
                                                        
-HEAT_COLS = 30
-HEAT_ROWS = 16
+HEAT_COLS = 16
+HEAT_ROWS = 30
 HEAT_CELL = 11
 HEAT_W = HEAT_COLS * HEAT_CELL
 HEAT_H = HEAT_ROWS * HEAT_CELL
@@ -87,21 +82,14 @@ NAV_ITEMS = [
 ]
 
 SVG_ICONS = {
-    "grid": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
-    "activity": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>',
-    "file": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8"/></svg>',
-    "settings": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.7 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.7-1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.7-1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.7 1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 2z" transform="translate(-1 -1) scale(1.08)"/></svg>',
-    "user-plus": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></svg>',
-    "trash": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6m4 4v6m6-6v6"/></svg>',
-    "check": '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>',
+    "grid": '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+    "activity": '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>',
+    "file": '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8"/></svg>',
+    "settings": '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#d7e4f5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.7 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.7-1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.7-1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.7 1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 2z" transform="translate(-1 -1) scale(1.08)"/></svg>',
+    "user-plus": '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></svg>',
+    "trash": '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6m4 4v6m6-6v6"/></svg>',
+    "check": '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>',
 }
-
-
-
-_GENDER_IMAGES = {}
-
-
-
 
 class LayerSpec:
     """One sensor-map layer (temperature, pressure or EMG)."""
@@ -125,9 +113,9 @@ LAYERS = {
 
                                                                                
 NODE_POS = {
-    "T": ((0.20, 0.25), (0.20, 0.75), (0.80, 0.25), (0.80, 0.75)),
-    "P": ((0.35, 0.50), (0.50, 0.28), (0.50, 0.72), (0.65, 0.50)),
-    "E": ((0.10, 0.50), (0.30, 0.25), (0.30, 0.75), (0.70, 0.25), (0.70, 0.75), (0.90, 0.50)),
+    "T": ((0.35, 0.18), (0.65, 0.18), (0.35, 0.82), (0.65, 0.82)),
+    "P": ((0.50, 0.22), (0.30, 0.50), (0.70, 0.50), (0.50, 0.78)),
+    "E": ((0.50, 0.10), (0.30, 0.28), (0.70, 0.42), (0.30, 0.58), (0.70, 0.72), (0.50, 0.90)),
 }
 
 
@@ -891,8 +879,8 @@ class SensorMapPanel(ctk.CTkFrame):
 
         caption = ctk.CTkFrame(holder, fg_color="transparent")
         caption.pack(fill="x")
-        ctk.CTkLabel(caption, text="◄ WRIST", text_color=MUTED, font=ctk.CTkFont(size=10)).pack(side="left")
-        ctk.CTkLabel(caption, text="ELBOW ►", text_color=MUTED, font=ctk.CTkFont(size=10)).pack(side="right")
+        ctk.CTkLabel(caption, text="WRIST ↑", text_color=MUTED, font=ctk.CTkFont(size=10)).pack(side="top")
+        ctk.CTkLabel(caption, text="ELBOW ↓", text_color=MUTED, font=ctk.CTkFont(size=10)).pack(side="bottom")
 
                                                                               
     def select_layer(self, key: str) -> None:
@@ -1112,6 +1100,7 @@ class TelemetryPage(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self._crew = crew
         self._index = 0
+        self._last_render_signature = None
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
         if not crew:
@@ -1154,8 +1143,8 @@ class TelemetryPage(ctk.CTkFrame):
         middle.grid(row=1, column=0, sticky="nsew")
         middle.grid_rowconfigure(0, weight=1)
         middle.grid_columnconfigure(0, weight=3, uniform="mid")
-        middle.grid_columnconfigure(1, weight=5, uniform="mid")
-        middle.grid_columnconfigure(2, weight=3, uniform="mid")
+        middle.grid_columnconfigure(1, weight=2, uniform="mid")
+        middle.grid_columnconfigure(2, weight=4, uniform="mid")
 
         self._raw_panel = RawDataPanel(middle)
         self._raw_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
@@ -1193,7 +1182,7 @@ class TelemetryPage(ctk.CTkFrame):
         self.refresh()
 
     def set_members(self, crew: list[CrewMember]) -> None:
-        """Replace data references without rebuilding widgets."""
+        """Update data references and refresh only changed selection."""
         selected_id = self.current.crew_id if self._crew else None
         self._crew = crew
         if not crew:
@@ -1202,12 +1191,26 @@ class TelemetryPage(ctk.CTkFrame):
             (i for i, member in enumerate(crew) if member.crew_id == selected_id),
             min(self._index, len(crew) - 1),
         )
-        self.refresh()
+        current = self.current
+        signature = self._render_signature(current)
+        if signature != self._last_render_signature:
+            self.refresh()
+
+    @staticmethod
+    def _render_signature(crew):
+        return (
+            crew.crew_id, crew.seq, crew.last_packet, crew.connected,
+            tuple(crew.nodes["t"]), tuple(crew.nodes["p"]), tuple(crew.nodes["e"]),
+            crew.pulse, crew.spo2, crew.vel, crew.humidity,
+            tuple((key, tuple(value)) for key, value in crew.raw.items()),
+            tuple(tuple(crew.hist[key]) for key in HISTORY_KEYS),
+        )
 
     def refresh(self) -> None:
         """Update all widgets with the latest values."""
         crew = self.current
         if crew is None: return
+        self._last_render_signature = self._render_signature(crew)
         for i, dot in enumerate(self._dots):
             dot.configure(
                 text="●" if i == self._index else "○",
@@ -1696,9 +1699,13 @@ class CrewDataRepository:
 
     def __init__(self, directory):
         self.directory = Path(directory)
+        self._cache = {}
 
     def set_directory(self, directory):
-        self.directory = Path(directory)
+        new_directory = Path(directory)
+        if new_directory != self.directory:
+            self.directory = new_directory
+            self._cache.clear()
 
     def register(self, crew_id, name, age, role, gender):
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -1718,21 +1725,69 @@ class CrewDataRepository:
             stream.write(json.dumps({"_meta": metadata}, ensure_ascii=False) + "\n")
             for record in records:
                 stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self._cache.pop(path, None)
 
     def delete(self, crew_id):
         path = self.directory / f"{int(crew_id)}.dat"
         if path.exists():
             path.unlink()
+        self._cache.pop(path, None)
 
     def load_all(self):
         self.directory.mkdir(parents=True, exist_ok=True)
         members = []
-        for path in sorted(self.directory.glob("*.dat")):
+        active_paths = set(self.directory.glob("*.dat"))
+        for stale_path in set(self._cache) - active_paths:
+            self._cache.pop(stale_path, None)
+        for path in sorted(active_paths):
             try:
-                members.append(self._read_member(path))
+                members.append(self._read_incremental(path))
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                continue
+                cached = self._cache.get(path)
+                if cached is not None:
+                    members.append(cached["member"])
         return members
+
+    def _read_incremental(self, path):
+        stat = path.stat()
+        with path.open("r", encoding="utf-8") as stream:
+            meta_line = stream.readline()
+            cached = self._cache.get(path)
+            reset = (
+                cached is None
+                or cached["meta_line"] != meta_line
+                or stat.st_size < cached["offset"]
+                or cached["inode"] != getattr(stat, "st_ino", None)
+            )
+            if reset:
+                metadata_record = json.loads(meta_line) if meta_line.strip() else {}
+                metadata = metadata_record.get("_meta", {})
+                crew_id = metadata.get("crew_id", path.stem)
+                member = CrewMember(
+                    crew_id, name=metadata.get("name", "Unknown crew member"),
+                    gender=metadata.get("gender", "—"), age=metadata.get("age"),
+                    role=metadata.get("role", "—"),
+                )
+                self._cache[path] = {
+                    "member": member, "meta_line": meta_line,
+                    "offset": stream.tell(), "inode": getattr(stat, "st_ino", None),
+                }
+                cached = self._cache[path]
+            member = cached["member"]
+            stream.seek(cached["offset"])
+            while True:
+                line = stream.readline()
+                if not line or not line.endswith("\n"):
+                    break
+                if not line.strip():
+                    cached["offset"] = stream.tell()
+                    continue
+                record = json.loads(line)
+                self._apply_record(member, record)
+                cached["offset"] = stream.tell()
+        member.connected = bool(member.last_seen and (time.time() - member.last_seen) < 5)
+        member.source_file = str(path)
+        return member
 
     def _read_member(self, path):
         metadata = {}
@@ -1831,19 +1886,10 @@ class Interface(ctk.CTk):
     def refresh_data(self, force=False):
         self.repository.set_directory(self.data_dir)
         incoming = self.repository.load_all()
-        existing = {member.crew_id: member for member in self.crew}
-        updated = []
-        for fresh in incoming:
-            current = existing.get(fresh.crew_id)
-            if current is None:
-                updated.append(fresh)
-                continue
-            current.__dict__.update(fresh.__dict__)
-            updated.append(current)
-        self.crew = updated
+        self.crew = incoming
 
         overview = self.pages.get("overview")
-        if overview is not None:
+        if overview is not None and self.current_page == "overview":
             overview.set_members(self.crew)
 
         telemetry = self.pages.get("telemetry")
@@ -1859,7 +1905,7 @@ class Interface(ctk.CTk):
                     )
                 if was_visible:
                     self.pages["telemetry"].grid(row=0, column=0, sticky="nsew")
-            else:
+            elif self.current_page == "telemetry":
                 telemetry.set_members(self.crew)
 
     def _poll_data(self):
@@ -1874,6 +1920,7 @@ class Interface(ctk.CTk):
         self.pages[name].grid(row=0,column=0,sticky="nsew"); self.pages[name].tkraise(); self.current_page=name
         self.sidebar.set_active(("overview","telemetry","archive","settings").index(name))
         if name=="telemetry": self.telemetry.show_crew()
+        elif name=="overview": self.pages[name].set_members(self.crew)
     def show_overview(self): return OverviewPage(self.content,self.crew,self.open_member_details)
     def open_member_details(self, member):
         self.navigate("telemetry")

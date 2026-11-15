@@ -1,0 +1,1 @@
+Code was written with assistance of Super Intelegence (SI)

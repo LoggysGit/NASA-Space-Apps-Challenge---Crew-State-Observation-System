@@ -20,7 +20,7 @@ class BridgeWin:
 
     def start(self):
         """Start UDP listener"""
-
+        print("Starting!")
         if self.is_running:
             return
 
@@ -48,18 +48,18 @@ class BridgeWin:
                         f"[BridgeWin] Received {len(data)} bytes from {addr}"
                     )
 
-                    print(f"DATA HERE!! {data.hex(' ')}")
-
-                    self.core.parsePacket(data)
+                    self.core.parse_packet(data)
 
                 except socket.timeout:
+                    print("Timeout")
                     continue
 
                 except OSError:
                     if self.is_running:
                         raise
 
-        except Exception:
+        except Exception as e:
+            print(f"[bridge] Error: {e}")
             logger.exception("[BridgeWin Error]")
 
         finally:
