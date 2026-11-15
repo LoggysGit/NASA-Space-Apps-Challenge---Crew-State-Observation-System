@@ -218,6 +218,102 @@ class CrewMember:
         self.log = deque(maxlen=LOG_MAX)
         self.raw = {}
         self.source_file = ""
+        # Derived indicators are reconstructed from the latest telemetry snapshot.
+        self.latest_metrics = {}
+        self.metatags = []
+
+    @staticmethod
+    def _metric(data, key):
+        try:
+            value = float(data.get(key))
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    @staticmethod
+    def _bounded_score(value, low, high):
+        if high <= low:
+            return 0.0
+        return max(0.0, min(100.0, (value - low) * 100.0 / (high - low)))
+
+    @staticmethod
+    def _distance_score(value, ideal_low, ideal_high, zero_low, zero_high):
+        if ideal_low <= value <= ideal_high:
+            return 100.0
+        if value < ideal_low:
+            span = ideal_low - zero_low
+            return 0.0 if span <= 0 else max(0.0, min(100.0, (value - zero_low) * 100.0 / span))
+        span = zero_high - ideal_high
+        return 0.0 if span <= 0 else max(0.0, min(100.0, (zero_high - value) * 100.0 / span))
+
+    def update_derived_metrics(self, telemetry):
+        """Calculate health, stress and active metatags from telemetry."""
+        self.latest_metrics.update(telemetry or {})
+        data = self.latest_metrics
+
+        health_parts = []
+        temp = self._metric(data, "temperature_map_c")
+        pressure = self._metric(data, "pressure_map_kpa")
+        bpm = self._metric(data, "pulse_bpm")
+        spo2 = self._metric(data, "spo2_pct")
+        emg = self._metric(data, "emg_rms_uv")
+        humidity = self._metric(data, "humidity_pct")
+
+        if temp is not None:
+            health_parts.append((0.25, self._distance_score(temp, 36.5, 37.5, 30.0, 42.0)))
+        if pressure is not None:
+            health_parts.append((0.10, self._distance_score(pressure, 8.0, 20.0, 3.0, 30.0)))
+        if bpm is not None:
+            health_parts.append((0.20, self._distance_score(bpm, 60.0, 100.0, 35.0, 180.0)))
+        if spo2 is not None:
+            health_parts.append((0.30, self._distance_score(spo2, 96.0, 100.0, 70.0, 100.0)))
+        if emg is not None:
+            health_parts.append((0.10, 100.0 - self._bounded_score(emg, 150.0, 1500.0)))
+        if humidity is not None:
+            health_parts.append((0.05, self._distance_score(humidity, 30.0, 60.0, 0.0, 100.0)))
+
+        weight_sum = sum(weight for weight, _ in health_parts)
+        if weight_sum:
+            self.overall_health = round(
+                sum(weight * score for weight, score in health_parts) / weight_sum, 1
+            )
+
+        stress_parts = []
+        if bpm is not None:
+            stress_parts.append((0.40, self._bounded_score(bpm, 55.0, 130.0)))
+        if temp is not None:
+            stress_parts.append((0.20, 100.0 - self._distance_score(temp, 36.5, 37.5, 34.0, 40.0)))
+        if emg is not None:
+            stress_parts.append((0.30, self._bounded_score(emg, 100.0, 1200.0)))
+        if humidity is not None:
+            stress_parts.append((0.10, 100.0 - self._distance_score(humidity, 30.0, 60.0, 0.0, 100.0)))
+
+        stress_weight = sum(weight for weight, _ in stress_parts)
+        self.stress_level = (
+            round(sum(weight * score for weight, score in stress_parts) / stress_weight, 1)
+            if stress_weight else None
+        )
+
+        tags = []
+        if spo2 is not None:
+            if spo2 < 90.0:
+                tags.append("hypoxia")
+            elif spo2 >= 99.5:
+                tags.append("hyperxia")
+        if temp is not None:
+            if temp < 35.0:
+                tags.append("hypothermia")
+            elif temp >= 38.0:
+                tags.append("hyperthermia")
+        if self.stress_level is not None and self.stress_level >= 60.0:
+            tags.append("stress")
+        if bpm is not None:
+            if bpm < 50.0:
+                tags.append("bradycardia")
+            elif bpm > 110.0:
+                tags.append("tachycardia")
+        self.metatags = tags
+
 
 class UIHelpers:
     """Static helpers for interface rendering."""
@@ -424,7 +520,6 @@ class Sidebar(ctk.CTkFrame):
             )
             button.pack(fill="x", padx=12, pady=4)
             self._buttons.append(button)
-        ctk.CTkLabel(self, text="CORE DATA  ·  .DAT", text_color="#65758c", font=ctk.CTkFont(size=9, weight="bold")).pack(side="bottom", anchor="w", padx=22, pady=22)
 
     def set_active(self, index: int) -> None:
         for i, button in enumerate(self._buttons):
@@ -479,8 +574,11 @@ class StarRating(tk.Canvas):
 class CrewCard(ctk.CTkFrame):
     """Compact crew summary with health, stress, vital averages and battery."""
 
-    def __init__(self, master: tk.Misc, member: CrewMember, on_details: Callable[[CrewMember], None] | None = None) -> None:
+    def __init__(self, master: tk.Misc, member: CrewMember,
+                 on_details: Callable[[CrewMember], None] | None = None,
+                 on_metatags: Callable[[CrewMember, tk.Misc], None] | None = None) -> None:
         self._on_details = on_details
+        self._on_metatags = on_metatags
         self._member = member
         super().__init__(
             master, width=300, height=540, corner_radius=18, fg_color=CARD_BG,
@@ -543,11 +641,13 @@ class CrewCard(ctk.CTkFrame):
             top, text="", font=ctk.CTkFont(size=12, weight="bold"), anchor="e"
         )
         self._battery_label.grid(row=0, column=1, sticky="e", padx=(6, 0))
-        ctk.CTkButton(
+        self._info_button = ctk.CTkButton(
             top, text="i", width=24, height=24, corner_radius=12,
             font=ctk.CTkFont(size=12, weight="bold"),
-            command=lambda: self._on_details(self._member) if self._on_details else None,
-        ).grid(row=0, column=2, sticky="e", padx=(6, 0))
+            command=lambda: self._on_metatags(self._member, self._info_button)
+            if self._on_metatags else None,
+        )
+        self._info_button.grid(row=0, column=2, sticky="e", padx=(6, 0))
         ctk.CTkLabel(
             self, text=f"ID: {member.crew_id}", text_color=MUTED,
             font=ctk.CTkFont(size=11), anchor="w",
@@ -656,7 +756,7 @@ class CrewCard(ctk.CTkFrame):
 class OverviewPage(ctk.CTkFrame):
     """Show all crew and a duplicated critical subset."""
 
-    def __init__(self, master: tk.Misc, crew: list[CrewMember], on_details=None) -> None:
+    def __init__(self, master: tk.Misc, crew: list[CrewMember], on_details=None, on_metatags=None) -> None:
         super().__init__(master, fg_color="transparent")
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -674,6 +774,7 @@ class OverviewPage(ctk.CTkFrame):
         self._body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
         self._body.grid_columnconfigure(0, weight=1)
         self._on_details = on_details
+        self._on_metatags = on_metatags
         self._all_strip = self._make_section("ALL CREW", 0)
         self._critical_strip = self._make_section("CRITICAL CONDITION", 2)
         self._all_cards = []
@@ -710,7 +811,7 @@ class OverviewPage(ctk.CTkFrame):
             return [label]
         updated = []
         for member in members:
-            card = CrewCard(strip, member, self._on_details)
+            card = CrewCard(strip, member, self._on_details, self._on_metatags)
             card.pack(side="left", padx=8, pady=4, anchor="n")
             updated.append(card)
         return updated
@@ -1665,6 +1766,12 @@ class ArchivePage(ctk.CTkFrame):
         self._docs = self._discover_documents()
         self._on_search()
 
+    def search_for_tag(self, tag: str) -> None:
+        """Fill the archive search box and immediately filter documents."""
+        self._entry.delete(0, "end")
+        self._entry.insert(0, str(tag).strip().lower().lstrip("#"))
+        self._on_search()
+
     def _on_search(self, _event=None) -> None:
         query = self._entry.get().strip().lower().lstrip("#")
         if query:
@@ -2007,9 +2114,6 @@ class CrewDataRepository:
             health_value = data.get("overall_health_pct", data.get("overall_health"))
             if isinstance(health_value, (int, float)) and math.isfinite(float(health_value)):
                 member.overall_health = float(health_value)
-            stress_value = data.get("stress_level_pct", data.get("stress_pct", data.get("stress_level")))
-            if isinstance(stress_value, (int, float, str)):
-                member.stress_level = stress_value
             for key, value in data.items():
                 member.raw[key] = (value, stamp)
                 if key in ("vbat", "+vBat"):
@@ -2034,6 +2138,7 @@ class CrewDataRepository:
 
         elif record_type == "telemetry":
             member.seq = source.get("seq_count", member.seq)
+            member.update_derived_metrics(data)
             field_stamps = record.get("field_timestamps") or {}
             def value_stamp(key):
                 try:
@@ -2056,10 +2161,6 @@ class CrewDataRepository:
                 health_value = data.get("overall_health", record.get("overall_health"))
             if isinstance(health_value, (int, float)) and math.isfinite(float(health_value)):
                 member.overall_health = float(health_value)
-            stress_value = data.get("stress_level_pct", data.get("stress_pct", data.get("stress_level")))
-            if isinstance(stress_value, (int, float, str)):
-                member.stress_level = stress_value
-
             pulse = data.get("pulse_bpm")
             spo2 = data.get("spo2_pct")
             velocity = data.get("blood_velocity_cm_s")
@@ -2160,7 +2261,63 @@ class Interface(ctk.CTk):
         if name=="telemetry": self.telemetry.show_crew()
         elif name=="overview": self.pages[name].set_members(self.crew)
         elif name=="archive": self.pages[name].refresh_documents()
-    def show_overview(self): return OverviewPage(self.content,self.crew,self.open_member_details)
+    def show_overview(self):
+        return OverviewPage(
+            self.content, self.crew, self.open_member_details, self.open_metatag_search
+        )
+
+    def open_metatag_search(self, member, anchor):
+        """Show active metatags for a crew member in a compact popup."""
+        popup = getattr(self, "_metatag_popup", None)
+        if popup is not None:
+            try:
+                if popup.winfo_exists():
+                    popup.destroy()
+            except tk.TclError:
+                pass
+
+        popup = ctk.CTkToplevel(self)
+        self._metatag_popup = popup
+        popup.title("Metatags")
+        popup.resizable(False, False)
+        popup.transient(self)
+        popup.configure(fg_color=CARD_BG)
+
+        x = anchor.winfo_rootx() + anchor.winfo_width() + 6
+        y = anchor.winfo_rooty()
+        popup.geometry(f"220x{max(104, 72 + 38 * max(1, len(member.metatags)))}+{x}+{y}")
+
+        ctk.CTkLabel(
+            popup, text=f"METATAGS · {member.name}",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=MUTED,
+        ).pack(anchor="w", padx=12, pady=(10, 6))
+
+        if not member.metatags:
+            ctk.CTkLabel(
+                popup, text="No active metatags", text_color=MUTED,
+                font=ctk.CTkFont(size=12),
+            ).pack(anchor="w", padx=12, pady=(4, 12))
+        else:
+            for tag in member.metatags:
+                ctk.CTkButton(
+                    popup, text=tag, height=30, anchor="w", corner_radius=7,
+                    fg_color="#203858", hover_color="#29466d",
+                    command=lambda selected=tag: self._select_metatag(selected),
+                ).pack(fill="x", padx=10, pady=3)
+
+        popup.focus_force()
+
+    def _select_metatag(self, tag):
+        popup = getattr(self, "_metatag_popup", None)
+        if popup is not None:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+            self._metatag_popup = None
+        self.navigate("archive")
+        self.pages["archive"].search_for_tag(tag)
+
     def open_member_details(self, member):
         self.navigate("telemetry")
         if self.crew and hasattr(self, "telemetry"):
