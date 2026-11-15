@@ -208,6 +208,7 @@ class CrewMember:
         self.connected = False
         self.pulse = None
         self.spo2 = None
+        self.overall_health = None
         self.vel = None
         self.humidity = None
         self.ppg = [None] * 4
@@ -482,7 +483,7 @@ class CrewCard(ctk.CTkFrame):
         self._member = member
         super().__init__(
             master, width=300, height=540, corner_radius=18, fg_color=CARD_BG,
-            border_width=1, border_color=INACTIVE,
+            border_width=2, border_color=self._health_color(member.overall_health),
         )
         self.pack_propagate(False)
         self.grid_propagate(False)
@@ -493,6 +494,16 @@ class CrewCard(ctk.CTkFrame):
         self._build_figure(member)
         self._build_vitals(member)
         self._build_footer(member)
+
+    @staticmethod
+    def _health_color(value: float | None) -> str:
+        if value is None:
+            return INACTIVE
+        ratio = max(0.0, min(100.0, float(value))) / 100.0
+        start = (28, 105, 66)
+        end = (48, 5, 24)
+        rgb = tuple(round(end[i] + (start[i] - end[i]) * ratio) for i in range(3))
+        return "#" + "".join(f"{channel:02x}" for channel in rgb)
 
     def _build_top(self, member: CrewMember) -> None:
         top = ctk.CTkFrame(self, fg_color="transparent")
@@ -510,7 +521,15 @@ class CrewCard(ctk.CTkFrame):
             self, text=f"ID: {member.crew_id}", text_color=MUTED,
             font=ctk.CTkFont(size=11), anchor="w",
         ).grid(row=1, column=0, sticky="w", padx=16)
-        ctk.CTkLabel(self, text="Health and stress: not provided by Core", text_color=MUTED, font=ctk.CTkFont(size=12), anchor="w").grid(row=2, column=0, sticky="w", padx=16, pady=(10, 0))
+        health_text = (
+            f"Overall health: {member.overall_health:.1f}%"
+            if member.overall_health is not None else "Overall health: —"
+        )
+        self._health_label = ctk.CTkLabel(
+            self, text=health_text, text_color=MUTED,
+            font=ctk.CTkFont(size=12), anchor="w",
+        )
+        self._health_label.grid(row=2, column=0, sticky="w", padx=16, pady=(10, 0))
 
     def _build_figure(self, member: CrewMember) -> None:
         row = ctk.CTkFrame(self, fg_color="transparent")
@@ -566,8 +585,12 @@ class CrewCard(ctk.CTkFrame):
                 text = widget.cget("text")
                 if str(text).startswith("ID:"):
                     widget.configure(text=f"ID: {member.crew_id}")
-                elif text == "Health and stress: not provided by Core":
-                    continue
+        health_text = (
+            f"Overall health: {member.overall_health:.1f}%"
+            if member.overall_health is not None else "Overall health: —"
+        )
+        self._health_label.configure(text=health_text)
+        self.configure(border_color=self._health_color(member.overall_health))
         rows = [child for child in self.winfo_children() if isinstance(child, ctk.CTkFrame)]
         if len(rows) > 2:
             vitals = rows[2].winfo_children()
@@ -593,62 +616,74 @@ class CrewCard(ctk.CTkFrame):
 
 
 class OverviewPage(ctk.CTkFrame):
-    """Header with link status and a horizontal strip of crew cards."""
+    """Show all crew and a duplicated critical subset."""
 
     def __init__(self, master: tk.Misc, crew: list[CrewMember], on_details=None) -> None:
         super().__init__(master, fg_color="transparent")
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
-
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
         header.grid_columnconfigure(0, weight=1)
-
-        peers = sum(member.connected for member in crew)
-        self._peers_label = ctk.CTkLabel(
-            header, text=f"Connected: {peers} peers", font=ctk.CTkFont(size=16, weight="bold")
-        )
+        self._peers_label = ctk.CTkLabel(header, text="", font=ctk.CTkFont(size=16, weight="bold"))
         self._peers_label.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(
             header, text="Ground link: not reported by Core",
             font=ctk.CTkFont(size=14, weight="bold"), text_color="white",
             fg_color=INACTIVE, corner_radius=12, padx=14, pady=3,
         ).grid(row=0, column=1, sticky="e")
-
-        strip = ctk.CTkScrollableFrame(self, orientation="horizontal", fg_color="transparent")
-        strip.grid(row=1, column=0, sticky="nsew", padx=10, pady=(4, 14))
-        if not crew:
-            ctk.CTkLabel(strip, text="No .dat telemetry files found. Waiting for Core...", text_color=MUTED).pack(padx=24, pady=30)
-        self._strip = strip
+        self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self._body.grid_columnconfigure(0, weight=1)
         self._on_details = on_details
-        self._cards = []
-        self._member_ids = tuple(member.crew_id for member in crew)
-        for member in crew:
-            card = CrewCard(strip, member, on_details)
+        self._all_strip = self._make_section("ALL CREW", 0)
+        self._critical_strip = self._make_section("КРИТИЧЕСКОЕ СОСТОЯНИЕ", 2)
+        self._all_cards = []
+        self._critical_cards = []
+        self.set_members(crew)
+
+    def _make_section(self, title: str, row: int):
+        ctk.CTkLabel(
+            self._body, text=title, font=ctk.CTkFont(size=16, weight="bold"), anchor="w",
+        ).grid(row=row, column=0, sticky="ew", padx=8, pady=(12, 4))
+        strip = ctk.CTkScrollableFrame(
+            self._body, orientation="horizontal", height=558, fg_color="transparent",
+        )
+        strip.grid(row=row + 1, column=0, sticky="ew", padx=2, pady=(0, 8))
+        return strip
+
+    def _sync_strip(self, strip, cards, members):
+        current_ids = tuple(
+            card._member.crew_id for card in cards if hasattr(card, "_member")
+        )
+        next_ids = tuple(member.crew_id for member in members)
+        if not members and len(cards) == 1 and not hasattr(cards[0], "_member"):
+            return cards
+        if current_ids == next_ids and len(cards) == len(members):
+            for card, member in zip(cards, members):
+                card.refresh(member)
+            return cards
+        for card in cards:
+            card.destroy()
+        if not members:
+            message = "No crew members" if strip is self._all_strip else "Нет участников с overall health ниже 10%"
+            label = ctk.CTkLabel(strip, text=message, text_color=MUTED)
+            label.pack(anchor="w", padx=16, pady=20)
+            return [label]
+        updated = []
+        for member in members:
+            card = CrewCard(strip, member, self._on_details)
             card.pack(side="left", padx=8, pady=4, anchor="n")
-            self._cards.append(card)
+            updated.append(card)
+        return updated
 
     def set_members(self, crew: list[CrewMember]) -> None:
-        """Keep overview widgets mounted during data polling."""
         self._peers_label.configure(text=f"Connected: {sum(member.connected for member in crew)} peers")
-        member_ids = tuple(member.crew_id for member in crew)
-        if member_ids != self._member_ids:
-            for card in self._cards:
-                card.destroy()
-            self._cards = []
-            self._member_ids = member_ids
-            for member in crew:
-                card = CrewCard(self._strip, member, self._on_details)
-                card.pack(side="left", padx=8, pady=4, anchor="n")
-                self._cards.append(card)
-        else:
-            for card, member in zip(self._cards, crew):
-                card.refresh(member)
+        critical = [member for member in crew if member.overall_health is not None and member.overall_health < 10.0]
+        self._all_cards = self._sync_strip(self._all_strip, self._all_cards, crew)
+        self._critical_cards = self._sync_strip(self._critical_strip, self._critical_cards, critical)
 
 
-                                                                             
-                            
-                                                                             
 class CrewHeader(ctk.CTkFrame):
     """ID/status on the left, name/details on the right."""
 
@@ -1337,7 +1372,7 @@ class DocumentCard(ctk.CTkFrame):
     def _set_hover(self, active: bool) -> None:
         color = DOC_CARD_HOVER if active else DOC_CARD
         self.configure(fg_color=color)
-        self._stars.configure(bg=color)
+        self._stars.configure(fg_color=color)
 
     def _on_leave(self, event: tk.Event) -> None:
         try:
@@ -1931,6 +1966,9 @@ class CrewDataRepository:
             member.last_seen = timestamp
             signal_age = max(0.0, time.time() - timestamp)
             member.last_signal_monotonic = time.monotonic() - signal_age
+            health_value = data.get("overall_health_pct", data.get("overall_health"))
+            if isinstance(health_value, (int, float)) and math.isfinite(float(health_value)):
+                member.overall_health = float(health_value)
             for key, value in data.items():
                 member.raw[key] = (value, stamp)
                 if key in ("vbat", "+vBat"):
@@ -1971,6 +2009,12 @@ class CrewDataRepository:
             emg_nodes = data.get("emg_nodes_uv")
             if isinstance(emg_nodes, dict):
                 member.nodes["e"] = [emg_nodes.get(f"e{i}") for i in range(1, 7)]
+
+            health_value = data.get("overall_health_pct", record.get("overall_health_pct"))
+            if health_value is None:
+                health_value = data.get("overall_health", record.get("overall_health"))
+            if isinstance(health_value, (int, float)) and math.isfinite(float(health_value)):
+                member.overall_health = float(health_value)
 
             pulse = data.get("pulse_bpm")
             spo2 = data.get("spo2_pct")

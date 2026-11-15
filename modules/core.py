@@ -401,3 +401,13 @@ class Core:
             return pulse, spo2, blood_velocity
         except Exception:
             return None, None, None
+        
+    # Abstract values
+    def _calculate_overall_health(avg_temp, avg_press, ems_rms, bpm, spo2, blood_vel, hum) -> float:
+        """ Returns overall percent of health (0 - dead, 100 - best conditional) """
+
+    def _calculate_stress(avg_temp, ems_rms, bpm, hum) -> float:
+        """ Returns amount of stress in percent (0 - fully relaxed, 100 - distressed) """
+
+    def _get_metatags_array(avg_temp, avg_press, bpm, spo2) -> list[str]:
+        """ Returns list of metatags for first aid documents """
