@@ -3,7 +3,7 @@
 import threading
 from queue import Queue
 
-from modules import lib, bridge, interface, core
+from modules import bridge, interface, core
 
 def system_thread(
         sys_buffer: Queue,
@@ -15,7 +15,7 @@ def system_thread(
     bridge.start()
 
 if __name__ == "__main__":
-    # App command queues
+    # App command queues (RESERVED)
     sys_command_buffer = Queue()
     gui_command_buffer = Queue()
 
@@ -32,10 +32,4 @@ if __name__ == "__main__":
     sys_thread.start()
 
     # Start app loop
-    def on_closing():
-        """ All-threads close function """
-        lib.log("App closing...")
-        sys_command_buffer.put(("CLOSE", None))
-        app.destroy()
-
     app.mainloop()

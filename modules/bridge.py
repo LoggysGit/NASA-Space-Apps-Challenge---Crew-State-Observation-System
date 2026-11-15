@@ -41,7 +41,6 @@ class BridgeWin:
                     data, addr = self.sock.recvfrom(65535)
 
                     if not data:
-                        print("[BRDG] -")
                         continue
 
                     logger.info(
@@ -51,7 +50,6 @@ class BridgeWin:
                     self.core.parse_packet(data)
 
                 except socket.timeout:
-                    print("Timeout")
                     continue
 
                 except OSError:

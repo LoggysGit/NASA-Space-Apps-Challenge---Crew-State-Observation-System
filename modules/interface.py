@@ -48,6 +48,7 @@ DOC_MODAL_BG = "#0d1117"
 
                  
 REFRESH_INTERVAL_MS = 500
+CONNECTED_HOLD_SECONDS = 15
 HIST_LEN = 120
 LOG_MAX = 300
 LOG_VISIBLE = 80
@@ -203,6 +204,7 @@ class CrewMember:
         self.seq = None
         self.last_packet = None
         self.last_seen = 0.0
+        self.last_signal_monotonic = 0.0
         self.connected = False
         self.pulse = None
         self.spo2 = None
@@ -273,37 +275,6 @@ class UIHelpers:
         return f"#{red:02X}{green:02X}{blue:02X}"
 
     @staticmethod
-    def draw_silhouette(canvas: tk.Canvas, gender: str) -> None:
-        """Draw a front-facing figure ("M" or "F") with a wristband on the right arm."""
-        body = "#8a8f98"
-        cx = 70
-        canvas.create_oval(cx - 13, 8, cx + 13, 36, fill=body, outline="")        
-
-        if gender == "F":
-            torso = [cx - 24, 46, cx + 24, 46, cx + 14, 96, cx + 28, 135, cx - 28, 135, cx - 14, 96]
-            arm_width, leg_width = 8, 12
-            arm_l, arm_r = ((cx - 26, 52), (cx - 34, 114)), ((cx + 26, 52), (cx + 34, 114))
-            legs = (((cx - 10, 135), (cx - 11, 202)), ((cx + 10, 135), (cx + 11, 202)))
-        else:
-            torso = [cx - 32, 46, cx + 32, 46, cx + 20, 125, cx - 20, 125]
-            arm_width, leg_width = 11, 14
-            arm_l, arm_r = ((cx - 36, 52), (cx - 44, 118)), ((cx + 36, 52), (cx + 44, 118))
-            legs = (((cx - 10, 125), (cx - 11, 202)), ((cx + 10, 125), (cx + 11, 202)))
-
-        canvas.create_polygon(*torso, fill=body, outline="", smooth=True)
-        for (x0, y0), (x1, y1) in (arm_l, arm_r):
-            canvas.create_line(x0, y0, x1, y1, width=arm_width, fill=body, capstyle="round")
-        for (x0, y0), (x1, y1) in legs:
-            canvas.create_line(x0, y0, x1, y1, width=leg_width, fill=body, capstyle="round")
-
-                                                                           
-        (x0, y0), (x1, y1) = arm_r
-        bx = x0 + (x1 - x0) * 0.8
-        by = y0 + (y1 - y0) * 0.8
-        half = arm_width / 2 + 3
-        canvas.create_rectangle(bx - half, by - 4, bx + half, by + 4, fill=BAND_COLOR, outline="")
-
-    @staticmethod
     def draw_strip_chart(canvas: tk.Canvas, values: list[float], color: str,
                          min_span: float, decimals: int) -> None:
         """Draw a scrolling line chart with three y-axis labels."""
@@ -364,24 +335,43 @@ class UIHelpers:
         for prefix, label in (("t", "Temperature nodes"), ("p", "Pressure nodes"), ("e", "EMG nodes")):
             nodes = crew.nodes[prefix]
             values[label] = (", ".join(f"{value:g}" for value in nodes if value is not None) or "—", None)
-        values["t Map"] = ("Available" if crew.nodes["t"] else "—", None)
-        values["p Map"] = ("Available" if crew.nodes["p"] else "—", None)
-        values["em Map"] = ("Available" if crew.nodes["e"] else "—", None)
-        values["pulse"] = (f"{crew.pulse:.0f}" if crew.pulse is not None else "—", None)
-        values["spo2"] = (f"{crew.spo2:.1f}" if crew.spo2 is not None else "—", None)
-        values["blood vel"] = (f"{crew.vel:.1f}" if crew.vel is not None else "—", None)
-        values["humidity"] = (f"{crew.humidity:.1f}" if crew.humidity is not None else "—", None)
-        battery = crew.raw.get("vbat")
-        values["Battery voltage"] = (f"{float(battery[0]):.3f}" if battery else "—", None)
+        processed = {key.removeprefix("telemetry:"): value for key, value in crew.raw.items() if key.startswith("telemetry:")}
+        mappings = (
+            ("t Map", "temperature_map_c", "°C", 2),
+            ("p Map", "pressure_map_kpa", "kPa", 2),
+            ("em Map", "emg_rms_uv", "µV", 1),
+            ("pulse", "pulse_bpm", "bpm", 0),
+            ("spo2", "spo2_pct", "%", 1),
+            ("blood vel", "blood_velocity_cm_s", "cm/s", 1),
+            ("humidity", "humidity_pct", "%", 1),
+            ("Battery voltage", "battery_voltage_v", "V", 3),
+        )
+        for label, key, unit, decimals in mappings:
+            item = processed.get(key)
+            value = item[0] if item else None
+            if value is None and label == "Battery voltage":
+                raw_battery = crew.raw.get("vbat")
+                value = raw_battery[0] if raw_battery else None
+            try:
+                text = f"{float(value):.{decimals}f} {unit}" if value is not None else "—"
+            except (TypeError, ValueError):
+                text = "—"
+            values[label] = (text, None)
         return values
 
     @staticmethod
     def render_pdf_page(canvas, doc, page_num):
         canvas.delete("all")
         try:
-            with fitz.open(os.path.join(Path(__file__).resolve().parent, "fadocs", doc.filename)) as pdf:
+            if fitz is None:
+                raise RuntimeError("PyMuPDF is not installed. Run: pip install PyMuPDF")
+            if not doc.pdf_path or not Path(doc.pdf_path).is_file():
+                raise FileNotFoundError("The PDF file is missing")
+            with fitz.open(doc.pdf_path) as pdf:
+                if page_num < 1 or page_num > len(pdf):
+                    raise IndexError("PDF page is out of range")
                 page = pdf.load_page(page_num - 1)
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.4, 2.4), alpha=False)
                 image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
             image.thumbnail((max(1, canvas.winfo_width() - 24), max(1, canvas.winfo_height() - 24)))
             from PIL import ImageTk
@@ -530,10 +520,6 @@ class CrewCard(ctk.CTkFrame):
         if portrait is not None:
             portrait_label = ctk.CTkLabel(row, text="", image=portrait, width=140, height=210)
             portrait_label.grid(row=0, column=0, sticky="w")
-        else:
-            canvas = ctk.CTkCanvas(row, width=140, height=210, bg=CARD_BG, highlightthickness=0)
-            canvas.grid(row=0, column=0, sticky="w")
-            UIHelpers.draw_silhouette(canvas, member.gender)
         ctk.CTkButton(
             row, text="More...", width=84,
             command=lambda: self._on_details(member) if self._on_details else None,
@@ -1232,18 +1218,84 @@ class TelemetryPage(ctk.CTkFrame):
                                               
                                                                              
 class Document:
-    """Metadata of a PDF protocol located in fadocs/."""
+    """PDF entry with optional sidecar metadata."""
 
-    def __init__(self, filename: str, title: str, rating: float, tags: tuple, size: str,
-                 pages: int, summary: str, points: tuple) -> None:
-        self.filename = filename
-        self.title = title
-        self.rating = rating
-        self.tags = tags
+    def __init__(self, pdf_path: Path, pages: int, size: str, pdf_title: str | None = None) -> None:
+        self.pdf_path = Path(pdf_path)
+        self.filename = self.pdf_path.name
+        self.meta_path = self._find_meta_path()
+        self._fallback_title = pdf_title or self.pdf_path.stem.replace("_", " ")
+        self.title = self._fallback_title
+        self.rating = 0.0
+        self.tags = ()
+        self.keywords = ()
         self.size = size
         self.pages = pages
-        self.summary = summary
-        self.points = points
+        self.summary = ""
+        self.points = ()
+        self.metadata = {}
+        self.metadata_available = False
+        self.metadata_error = None
+        self.search_text = self.filename.lower()
+        self.load_metadata()
+
+    def _find_meta_path(self) -> Path | None:
+        candidates = (Path(str(self.pdf_path) + ".meta"), self.pdf_path.with_suffix(".meta"))
+        return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+    def load_metadata(self) -> None:
+        """Load the JSON sidecar when the document is opened or indexed."""
+        self.meta_path = self._find_meta_path()
+        self.metadata = {}
+        self.metadata_available = False
+        self.metadata_error = None
+        self.summary = ""
+        self.points = ()
+        self.tags = ()
+        self.keywords = ()
+        self.title = self._fallback_title
+        if self.meta_path is None:
+            self.search_text = self.filename.lower()
+            return
+        try:
+            with self.meta_path.open("r", encoding="utf-8-sig") as stream:
+                metadata = json.load(stream)
+            if not isinstance(metadata, dict):
+                raise ValueError("The .meta root must be a JSON object")
+            self.metadata = metadata
+            self.metadata_available = True
+            self.title = str(metadata.get("title") or self._fallback_title)
+            self.summary = str(metadata.get("summary") or metadata.get("abstract") or "")
+            points = metadata.get("points", metadata.get("key_points", metadata.get("actionable_points", [])))
+            if isinstance(points, str):
+                points = [points]
+            self.points = tuple(
+                str(item.get("text") or item.get("title") or item.get("description") or item)
+                if isinstance(item, dict) else str(item)
+                for item in points if item is not None
+            ) if isinstance(points, list) else ()
+            tags = metadata.get("tags", [])
+            keywords = metadata.get("keywords", [])
+            if isinstance(tags, str):
+                tags = [tags]
+            if isinstance(keywords, str):
+                keywords = [keywords]
+            self.tags = tuple(str(item).strip().lstrip("#") for item in tags if str(item).strip()) if isinstance(tags, list) else ()
+            self.keywords = tuple(str(item).strip() for item in keywords if str(item).strip()) if isinstance(keywords, list) else ()
+            searchable = []
+            pending = [metadata]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, dict):
+                    pending.extend(value.values())
+                elif isinstance(value, (list, tuple)):
+                    pending.extend(value)
+                elif value is not None:
+                    searchable.append(str(value).lower())
+            self.search_text = " ".join([self.filename.lower(), self.title.lower(), *searchable])
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            self.metadata_error = str(exc)
+            self.search_text = self.filename.lower()
 
 
 
@@ -1265,8 +1317,9 @@ class DocumentCard(ctk.CTkFrame):
         self._stars = ctk.CTkLabel(self, text=f"{doc.pages} pages", text_color=DOC_MUTED)
         self._stars.grid(row=0, column=1, sticky="e", padx=(8, 14), pady=(12, 2))
 
+        meta_terms = [*(f"#{tag}" for tag in doc.tags), *doc.keywords]
         tags = ctk.CTkLabel(
-            self, text="Tags: " + " ".join(f"#{t}" for t in doc.tags), anchor="w",
+            self, text="Tags / keywords: " + (" · ".join(meta_terms) or "—"), anchor="w",
             text_color=DOC_MUTED, font=ctk.CTkFont(size=11),
         )
         tags.grid(row=1, column=0, sticky="w", padx=(14, 8), pady=(0, 12))
@@ -1304,25 +1357,30 @@ class DocumentModal(ctk.CTkToplevel):
     def __init__(self, root: ctk.CTk, doc: Document) -> None:
         super().__init__(root)
         self._doc = doc
+        self._doc.load_metadata()
         self._current_page = 1
         self._is_expanded = False
+        self._normal_geometry = None
 
         self.title(doc.title)
         self.configure(fg_color=DOC_MODAL_BG)
         self.minsize(760, 560)
 
-        width, height = 1020, 800
         root.update_idletasks()
-        x = root.winfo_rootx() + (root.winfo_width() - width) // 2
-        y = root.winfo_rooty() + (root.winfo_height() - height) // 2
-        self.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        width = min(max(1180, int(screen_w * 0.94)), screen_w - 32)
+        height = min(max(820, int(screen_h * 0.92)), screen_h - 64)
+        x = max((screen_w - width) // 2, 0)
+        y = max((screen_h - height) // 2, 0)
+        self.geometry(f"{width}x{height}+{x}+{y}")
         self.transient(root)
         self.bind("<Escape>", lambda _e: self.destroy())
         self.after(200, self._grab_when_ready)
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_rowconfigure(2, weight=2)
+        self.grid_rowconfigure(1, weight=1, minsize=170)
+        self.grid_rowconfigure(2, weight=5, minsize=360)
 
         self._build_top_bar()
         self._build_info()
@@ -1363,8 +1421,23 @@ class DocumentModal(ctk.CTkToplevel):
         self._info_frame.grid_columnconfigure((0, 1), weight=1, uniform="info")
         self._info_frame.grid_rowconfigure(0, weight=1)
 
-        self._read_only_section(0, "BRIEF SUMMARY", self._doc.summary)
-        points = "\n".join(f"• Step {i}: {p}" for i, p in enumerate(self._doc.points, start=1))
+        if self._doc.summary:
+            summary = self._doc.summary
+        elif self._doc.metadata_error:
+            summary = f"Summary unavailable. Metadata file could not be read: {self._doc.metadata_error}"
+        elif self._doc.metadata_available:
+            summary = "No summary provided in the .meta file."
+        else:
+            summary = "No summary available — .meta file not found."
+        if self._doc.points:
+            points = "\n".join(f"• {point}" for point in self._doc.points)
+        elif self._doc.metadata_error:
+            points = "Key points unavailable because the .meta file could not be read."
+        elif self._doc.metadata_available:
+            points = "No key points provided in the .meta file."
+        else:
+            points = "No key points available — .meta file not found."
+        self._read_only_section(0, "BRIEF SUMMARY", summary)
         self._read_only_section(1, "KEY ACTIONABLE POINTS", points)
 
     def _read_only_section(self, col: int, heading: str, text: str) -> None:
@@ -1440,16 +1513,23 @@ class DocumentModal(ctk.CTkToplevel):
 
     def _toggle_expand(self) -> None:
         if self._is_expanded:
-            self._info_frame.grid()                                        
-            self.grid_rowconfigure(1, weight=1)
-            self.grid_rowconfigure(2, weight=2)
-            self._expand_btn.configure(text="[ ⤢ Expand PDF ]")
+            self._info_frame.grid()
+            self.grid_rowconfigure(1, weight=1, minsize=170)
+            self.grid_rowconfigure(2, weight=5, minsize=360)
+            if self._normal_geometry:
+                self.geometry(self._normal_geometry)
+            self._expand_btn.configure(text="Expand PDF")
         else:
+            self._normal_geometry = self.geometry()
             self._info_frame.grid_remove()
-            self.grid_rowconfigure(1, weight=0)
-            self.grid_rowconfigure(2, weight=1)
-            self._expand_btn.configure(text="[ ⤡ Restore ]")
+            self.grid_rowconfigure(1, weight=0, minsize=0)
+            self.grid_rowconfigure(2, weight=1, minsize=500)
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+            self.geometry(f"{screen_w - 20}x{screen_h - 50}+10+10")
+            self._expand_btn.configure(text="Restore details")
         self._is_expanded = not self._is_expanded
+        self.after(80, self._refresh)
 
 
 class ArchivePage(ctk.CTkFrame):
@@ -1470,15 +1550,16 @@ class ArchivePage(ctk.CTkFrame):
 
         self._entry = ctk.CTkEntry(
             bar, height=40, corner_radius=10,
-            placeholder_text="Search PDF filenames...",
+            placeholder_text="Search title, tags, keywords, author...",
         )
         self._entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self._entry.bind("<Return>", lambda _e: self._on_search())
+        self._entry.bind("<Return>", self._on_search)
+        self._entry.bind("<KeyRelease>", self._on_search)
         ctk.CTkButton(bar, text="Search", width=110, height=40, command=self._on_search).grid(
             row=0, column=1
         )
         ctk.CTkLabel(
-            bar, text="Source Directory: fadocs/", text_color=DOC_MUTED,
+            bar, text=f"Source Directory: {Path(__file__).resolve().parent.parent / 'fadocs'}  ·  Metadata: PDF sidecar .meta (JSON)", text_color=DOC_MUTED,
             font=ctk.CTkFont(family=MONO, size=12),
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
@@ -1488,28 +1569,33 @@ class ArchivePage(ctk.CTkFrame):
         self._render(self._docs)
 
     def _discover_documents(self) -> list[Document]:
+        directory = Path(__file__).resolve().parent.parent / "fadocs"
+        directory.mkdir(parents=True, exist_ok=True)
+        self._documents_dir = directory
         result = []
-        for path in sorted(glob.glob(os.path.join(Path(__file__).resolve().parent, "fadocs", "*.pdf"))):
-            name = os.path.basename(path); size = os.path.getsize(path)
+        for path in sorted(directory.glob("*.pdf"), key=lambda item: item.name.lower()):
+            size = path.stat().st_size
+            pdf_title = path.stem.replace("_", " ")
             try:
+                if fitz is None:
+                    raise RuntimeError("PyMuPDF is not installed")
                 with fitz.open(path) as pdf:
-                    pages = len(pdf); title = pdf.metadata.get("title") or os.path.splitext(name)[0]
+                    pages = len(pdf)
+                    pdf_title = pdf.metadata.get("title") or pdf_title
             except Exception:
-                pages = 0; title = os.path.splitext(name)[0]
-            result.append(Document(name, title.replace("_", " "), 0, (),
-                f"{size/1024/1024:.2f} MB", pages, "PDF document. No synthetic summary is shown.", ()))
+                pages = 0
+            result.append(Document(path, pages, f"{size / 1024 / 1024:.2f} MB", pdf_title))
         return result
 
-    def _on_search(self) -> None:
-        query = self._entry.get().strip()
-        needle = query.lower().lstrip("#")
-        if needle:
-            docs = [
-                d for d in self._docs
-                if needle in d.title.lower()
-                or needle in d.filename.lower()
-                or any(needle in tag for tag in d.tags)
-            ]
+    def refresh_documents(self) -> None:
+        """Reload PDFs and sidecar metadata from fadocs/."""
+        self._docs = self._discover_documents()
+        self._on_search()
+
+    def _on_search(self, _event=None) -> None:
+        query = self._entry.get().strip().lower().lstrip("#")
+        if query:
+            docs = [doc for doc in self._docs if query in doc.search_text]
         else:
             docs = self._docs
         self._render(docs)
@@ -1528,6 +1614,7 @@ class ArchivePage(ctk.CTkFrame):
             )
 
     def _open_document(self, doc: Document) -> None:
+        doc.load_metadata()
         if self._modal is not None:
             try:
                 if self._modal.winfo_exists():
@@ -1604,8 +1691,18 @@ class SettingsPage(ctk.CTkFrame):
         for label, key, row, col in fields:
             ctk.CTkLabel(grid, text=label, text_color="#c7d3e2", font=ctk.CTkFont(size=11, weight="bold")).grid(
                 row=row * 2, column=col, sticky="w", padx=(0, 10), pady=(8, 3))
-            entry = ctk.CTkEntry(grid, height=39, fg_color=FIELD_BG, border_color=PANEL_BORDER,
-                                 corner_radius=9, placeholder_text=label)
+            if key == "gender":
+                entry = ctk.CTkOptionMenu(
+                    grid, values=["Male", "Female"], height=39, fg_color=FIELD_BG,
+                    button_color=ACCENT, button_hover_color="#2d65d8",
+                    dropdown_fg_color=PANEL_BG, corner_radius=9,
+                )
+                entry.set("Male")
+            else:
+                entry = ctk.CTkEntry(
+                    grid, height=39, fg_color=FIELD_BG, border_color=PANEL_BORDER,
+                    corner_radius=9, placeholder_text=label,
+                )
             entry.grid(row=row * 2 + 1, column=col, sticky="ew", padx=(0, 16), pady=(0, 7))
             self.fields[key] = entry
         user_icon = UIHelpers.svg_icon("user-plus", 17)
@@ -1676,8 +1773,11 @@ class SettingsPage(ctk.CTkFrame):
             if not 1 <= age <= 120:
                 raise ValueError("Age must be between 1 and 120")
             self.app.register_crew(crew_id, name, age, role, gender)
-            for entry in self.fields.values():
-                entry.delete(0, "end")
+            for key, entry in self.fields.items():
+                if key == "gender":
+                    entry.set("Male")
+                else:
+                    entry.delete(0, "end")
             self.status.configure(text=f"Profile saved · {name} (ID {crew_id})", text_color=GREEN)
             self._refresh_roster()
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1785,7 +1885,10 @@ class CrewDataRepository:
                 record = json.loads(line)
                 self._apply_record(member, record)
                 cached["offset"] = stream.tell()
-        member.connected = bool(member.last_seen and (time.time() - member.last_seen) < 5)
+        member.connected = bool(
+            member.last_signal_monotonic
+            and (time.monotonic() - member.last_signal_monotonic) < CONNECTED_HOLD_SECONDS
+        )
         member.source_file = str(path)
         return member
 
@@ -1812,47 +1915,94 @@ class CrewDataRepository:
 
     @staticmethod
     def _apply_record(member, record):
+        """Apply either a raw packet or a processed Core telemetry snapshot."""
+        record_type = record.get("record_type", "raw")
         data = record.get("data") or {}
-        pulse_updated = False
-        spo2_updated = False
         try:
             timestamp = float(record.get("timestamp"))
             stamp = datetime.fromtimestamp(timestamp, timezone.utc)
         except (TypeError, ValueError, OSError):
             return
-        member.seq = record.get("seq_count", member.seq)
-        member.last_packet = stamp
-        member.last_seen = timestamp
-        for key, value in data.items():
-            if key == "computed_metrics":
-                if isinstance(value, (list, tuple)) and len(value) >= 3:
-                    member.pulse, member.spo2, member.vel = value[:3]
-                    pulse_updated = member.pulse is not None
-                    spo2_updated = member.spo2 is not None
-                continue
-            if key in ("vbat", "+vBat"):
-                member.raw["vbat"] = (value, stamp)
-                continue
-            member.raw[key] = (value, stamp)
-            if key == "t1" and isinstance(value, (int, float)):
-                member.hist["temperature"].append(value)
-            if key in ("r1", "ir1", "r2", "ir2"):
-                member.ppg[("r1", "ir1", "r2", "ir2").index(key)] = value
-            elif key == "h1":
-                member.humidity = value
-            elif key[:1] in ("t", "p", "e") and key[1:].isdigit():
-                prefix = key[0]
-                index = int(key[1:]) - 1
-                nodes = member.nodes[prefix]
-                while len(nodes) <= index:
-                    nodes.append(None)
-                nodes[index] = value
-        member.connected = (time.time() - member.last_seen) < 5
-        if pulse_updated:
-            member.hist["pulse"].append(member.pulse)
-        if spo2_updated:
-            member.hist["spo2"].append(member.spo2)
-        member.log.append(f"{stamp:%H:%M:%S} sensor={record.get('sensor_id')} seq={member.seq} data={json.dumps(data, ensure_ascii=False)}")
+
+        source = record.get("source") or {}
+        if record_type == "raw":
+            member.seq = record.get("seq_count", member.seq)
+            member.last_packet = stamp
+            member.last_seen = timestamp
+            signal_age = max(0.0, time.time() - timestamp)
+            member.last_signal_monotonic = time.monotonic() - signal_age
+            for key, value in data.items():
+                member.raw[key] = (value, stamp)
+                if key in ("vbat", "+vBat"):
+                    member.raw["vbat"] = (value, stamp)
+                elif key in ("r1", "ir1", "r2", "ir2"):
+                    member.ppg[("r1", "ir1", "r2", "ir2").index(key)] = value
+                elif key == "h1":
+                    member.humidity = value
+                elif key[:1] in ("t", "p", "e") and key[1:].isdigit():
+                    prefix = key[0]
+                    index = int(key[1:]) - 1
+                    nodes = member.nodes[prefix]
+                    while len(nodes) <= index:
+                        nodes.append(None)
+                    nodes[index] = value
+                if key == "t1" and isinstance(value, (int, float)):
+                    member.hist["temperature"].append(value)
+            member.log.append(
+                f"{stamp:%H:%M:%S} RAW sensor={record.get('sensor_id')} "
+                f"seq={member.seq} data={json.dumps(data, ensure_ascii=False)}"
+            )
+
+        elif record_type == "telemetry":
+            member.seq = source.get("seq_count", member.seq)
+            field_stamps = record.get("field_timestamps") or {}
+            def value_stamp(key):
+                try:
+                    return datetime.fromtimestamp(float(field_stamps.get(key, timestamp)), timezone.utc)
+                except (TypeError, ValueError, OSError):
+                    return stamp
+
+            temp_nodes = data.get("temperature_nodes_c")
+            if isinstance(temp_nodes, dict):
+                member.nodes["t"] = [temp_nodes.get(f"t{i}") for i in range(1, 5)]
+            pressure_nodes = data.get("pressure_nodes_kpa")
+            if isinstance(pressure_nodes, dict):
+                member.nodes["p"] = [pressure_nodes.get(f"p{i}") for i in range(1, 5)]
+            emg_nodes = data.get("emg_nodes_uv")
+            if isinstance(emg_nodes, dict):
+                member.nodes["e"] = [emg_nodes.get(f"e{i}") for i in range(1, 7)]
+
+            pulse = data.get("pulse_bpm")
+            spo2 = data.get("spo2_pct")
+            velocity = data.get("blood_velocity_cm_s")
+            humidity = data.get("humidity_pct")
+            if pulse is not None:
+                member.pulse = pulse
+                member.hist["pulse"].append(pulse)
+            if spo2 is not None:
+                member.spo2 = spo2
+                member.hist["spo2"].append(spo2)
+            if velocity is not None:
+                member.vel = velocity
+            if humidity is not None:
+                member.humidity = humidity
+
+            for key, value in data.items():
+                member.raw[f"telemetry:{key}"] = (value, value_stamp(key))
+            if "battery_voltage_v" in data and data["battery_voltage_v"] is not None:
+                member.raw["vbat"] = (data["battery_voltage_v"], value_stamp("battery_voltage_v"))
+            if "temperature_map_c" in data and data["temperature_map_c"] is not None:
+                member.hist["temperature"].append(data["temperature_map_c"])
+            member.log.append(
+                f"{stamp:%H:%M:%S} TELEMETRY source={source} "
+                f"data={json.dumps(data, ensure_ascii=False)}"
+            )
+
+        member.connected = bool(
+            member.last_signal_monotonic
+            and (time.monotonic() - member.last_signal_monotonic) < CONNECTED_HOLD_SECONDS
+        )
+
 
 
                                                                              
@@ -1921,6 +2071,7 @@ class Interface(ctk.CTk):
         self.sidebar.set_active(("overview","telemetry","archive","settings").index(name))
         if name=="telemetry": self.telemetry.show_crew()
         elif name=="overview": self.pages[name].set_members(self.crew)
+        elif name=="archive": self.pages[name].refresh_documents()
     def show_overview(self): return OverviewPage(self.content,self.crew,self.open_member_details)
     def open_member_details(self, member):
         self.navigate("telemetry")
